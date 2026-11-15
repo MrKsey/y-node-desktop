@@ -1,0 +1,29 @@
+# Build output
+app/build/
+core/bin/
+dist/
+
+# Flutter and Dart
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/.pub-cache/
+app/.pub/
+app/build/
+**/generated_plugin_registrant.dart
+
+# IDE and OS noise
+.idea/
+.vscode/
+*.iml
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+
+# Signing material produced by the build script
+*.pfx
+*.cer
+*.msix
+*.appx
