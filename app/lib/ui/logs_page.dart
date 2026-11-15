@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../app_state.dart';
 import 'widgets.dart';
 
 class LogsPage extends StatefulWidget {
@@ -15,16 +16,18 @@ class _LogsPageState extends State<LogsPage> {
   bool _follow = true;
   String _filter = '';
   Timer? _timer;
+  AppState? _app;
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) AppScope.of(context).refreshLogs();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Keep the state for the timer: a dependency lookup is only valid while the
+    // framework is building this widget.
+    _app = AppScope.of(context);
+    _timer ??= Timer.periodic(const Duration(seconds: 2), (_) {
+      if (_follow && mounted) _app?.refreshLogs();
     });
-    _timer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (_follow && mounted) AppScope.of(context).refreshLogs();
-    });
+    if (_app!.logs.isEmpty) _app!.refreshLogs();
   }
 
   @override
