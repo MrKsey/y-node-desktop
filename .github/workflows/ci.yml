@@ -180,13 +180,14 @@ jobs:
             $0 ~ "^## " ver "([[:space:]]|$)" { found = 1; next }
             found && /^## / { exit }
             found { print }
-          ' CHANGELOG.md > release-notes.md
+          ' CHANGELOG.md | sed '/./,$!d' > release-notes.md
           if [ ! -s release-notes.md ]; then
             echo "Y-Node Desktop $version" > release-notes.md
           fi
           cat release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
+          name: Y-Node Desktop ${{ github.ref_name }}
           body_path: release-notes.md
           files: release/*
           fail_on_unmatched_files: true
