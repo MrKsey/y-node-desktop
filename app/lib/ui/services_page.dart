@@ -1,11 +1,10 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
+import 'update_dialog.dart' show openExternalUrl;
 import 'widgets.dart';
 
 /// The Services page: the same address book the Android client shows — search,
@@ -300,23 +299,9 @@ class _ServicesPageState extends State<ServicesPage> {
   }
 
   Future<void> _open(ServiceEntry entry) async {
-    final opened = await _openExternal(entry.url);
+    final opened = await openExternalUrl(entry.url);
     if (!opened && mounted) {
       showSnack(context, 'The browser did not open the address');
-    }
-  }
-
-  /// Opens a URL in the default browser without a platform plugin.
-  static Future<bool> _openExternal(String url) async {
-    try {
-      final result = Platform.isWindows
-          ? await Process.run('rundll32', ['url.dll,FileProtocolHandler', url])
-          : Platform.isMacOS
-          ? await Process.run('open', [url])
-          : await Process.run('xdg-open', [url]);
-      return result.exitCode == 0;
-    } catch (_) {
-      return false;
     }
   }
 
