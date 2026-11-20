@@ -147,13 +147,15 @@ jobs:
           path: artifacts
       - name: Build SHA256SUMS.txt
         run: |
-          cd artifacts
-          find . -type f -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS.txt
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: checksums
-          path: artifacts/SHA256SUMS.txt
+          path: release/SHA256SUMS.txt
           if-no-files-found: error
 
   publish:
