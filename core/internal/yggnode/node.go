@@ -359,9 +359,11 @@ func (n *Node) Stop() {
 	n.running = false
 	rwc := n.rwc
 	tun := n.tun
+	manager := n.exit
 	n.rwc = nil
 	n.tun = nil
 	n.exit = nil
+	n.exitRaw = ""
 	n.dns = nil
 	n.core = nil
 	n.protector = nil
@@ -370,6 +372,12 @@ func (n *Node) Stop() {
 	n.tunGen++
 	n.mu.Unlock()
 
+	// The UDP association of the exit keeps two sockets and a ticker alive.
+	// Dropping the manager without closing it left them running after the node
+	// was stopped, which looked like a client that was still on the network.
+	if manager != nil {
+		manager.close()
+	}
 	if tun != nil {
 		tun.stop()
 	}
@@ -628,6 +636,14 @@ func (n *Node) GetExitStatusJSON() string {
 // allowed. The requests go through Yggdrasil, so a successful check also proves
 // that the exit is reachable. The call blocks for up to timeoutMs.
 func (n *Node) CheckExitProfiles(timeoutMs int) string {
+	return n.CheckExitProfilesContext(context.Background(), timeoutMs)
+}
+
+// CheckExitProfilesContext is CheckExitProfiles with a caller-owned context.
+// The desktop core passes the context of the connected session, so Disconnect
+// cancels a check that is already in flight instead of leaving the process
+// polling the exit after the tunnel is down.
+func (n *Node) CheckExitProfilesContext(parent context.Context, timeoutMs int) string {
 	n.mu.Lock()
 	manager := n.exit
 	n.mu.Unlock()
@@ -640,15 +656,17 @@ func (n *Node) CheckExitProfiles(timeoutMs int) string {
 	if timeoutMs > 30000 {
 		timeoutMs = 30000
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 	return manager.checkAll(ctx)
 }
 
 // RegisterExit redeems an invite token on one exit profile. Registration needs
 // a live tunnel: the exit authenticates the source address of the request, and
-// that address only exists while the node is connected.
-func (n *Node) RegisterExit(profileID string, invite string, deviceName string, appVersion string) string {
+// that address only exists while the node is connected. An empty invite is
+// accepted for an address that is already allowlisted, which is how the app
+// refreshes the device name and the label.
+func (n *Node) RegisterExit(profileID string, invite string, deviceName string, appVersion string, label string) string {
 	n.mu.Lock()
 	manager := n.exit
 	address := n.address
@@ -660,12 +678,32 @@ func (n *Node) RegisterExit(profileID string, invite string, deviceName string, 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	result := manager.register(ctx, profileID, invite, address, publicKey, deviceName, appVersion)
+	result := manager.register(ctx, profileID, invite, address, publicKey, deviceName, appVersion, label)
 	b, err := json.Marshal(result)
 	if err != nil {
 		return `{"ok":false,"error":"encode_failed"}`
 	}
 	return string(b)
+}
+
+// SetExitLabel renames this client on the exit node. The registration endpoint
+// keeps the label of a client that is already allowlisted, so the name of an
+// existing client is changed through /v1/label instead.
+func (n *Node) SetExitLabel(profileID, label string) string {
+	n.mu.Lock()
+	manager := n.exit
+	running := n.running
+	n.mu.Unlock()
+	if !running || manager == nil {
+		return `{"ok":false,"error":"vpn_not_running"}`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := manager.setLabel(ctx, profileID, label); err != nil {
+		b, _ := json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+		return string(b)
+	}
+	return `{"ok":true}`
 }
 
 // GetExitDNSAddress returns the address the tunnel hands to Android as its
@@ -785,8 +823,19 @@ func (n *Node) SetPeers(urisJSON string) error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return errors.New(strings.Join(errs, "; "))
+	// A peer that another goroutine (the exit registration or the peer
+	// supervisor) added between the snapshot above and the add call is not a
+	// failure: the wanted list is in place either way.
+	real := errs[:0]
+	for _, message := range errs {
+		if strings.Contains(message, "already configured") ||
+			strings.Contains(message, "already exists") {
+			continue
+		}
+		real = append(real, message)
+	}
+	if len(real) > 0 {
+		return errors.New(strings.Join(real, "; "))
 	}
 	return nil
 }
@@ -902,12 +951,19 @@ type ProbeResult struct {
 // timeoutMs bounds the whole round. The temporary node is always stopped before
 // the call returns.
 func ProbePeers(urisJSON string, timeoutMs int, logger Logger) string {
+	return ProbePeersContext(context.Background(), urisJSON, timeoutMs, logger)
+}
+
+// ProbePeersContext is ProbePeers with a caller-owned context. When the context
+// is cancelled the temporary node is stopped at once: a peer probe started by
+// the supervisor must not keep a Yggdrasil link alive after Disconnect.
+func ProbePeersContext(ctx context.Context, urisJSON string, timeoutMs int, logger Logger) string {
 	var uris []string
 	if err := json.Unmarshal([]byte(urisJSON), &uris); err != nil {
 		b, _ := json.Marshal([]ProbeResult{{Error: "bad probe list: " + err.Error()}})
 		return string(b)
 	}
-	if len(uris) == 0 {
+	if len(uris) == 0 || ctx.Err() != nil {
 		return "[]"
 	}
 	if timeoutMs < 1000 {
@@ -940,6 +996,9 @@ func ProbePeers(urisJSON string, timeoutMs int, logger Logger) string {
 	started := time.Now()
 	attempted := make([]string, 0, len(uris))
 	for _, uri := range uris {
+		if ctx.Err() != nil {
+			break
+		}
 		u := strings.TrimSpace(uri)
 		if u == "" {
 			continue
@@ -990,7 +1049,7 @@ func ProbePeers(urisJSON string, timeoutMs int, logger Logger) string {
 				break
 			}
 		}
-		if done || time.Now().After(deadline) {
+		if done || time.Now().After(deadline) || ctx.Err() != nil {
 			break
 		}
 		time.Sleep(150 * time.Millisecond)

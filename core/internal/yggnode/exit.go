@@ -43,6 +43,10 @@ type exitConfig struct {
 	SystemDNS      []string      `json:"systemDns"`
 	YggDNS         []string      `json:"yggDns"`
 	LocalDNS       bool          `json:"localDns"`
+	// DNSMode is "yggdrasil" (default), "system" or "custom".
+	DNSMode string `json:"dnsMode,omitempty"`
+	// IPv6 is "auto" (default), "prefer" or "off".
+	IPv6 string `json:"ipv6,omitempty"`
 
 	// UDP enables the SOCKS5 UDP ASSOCIATE path. It is a pointer so a config
 	// written by an older build (no field) keeps UDP on, while an explicit
@@ -53,6 +57,26 @@ type exitConfig struct {
 // udpEnabled reports whether public UDP may leave through the exit.
 func (c exitConfig) udpEnabled() bool {
 	return c.UDP == nil || *c.UDP
+}
+
+// dnsMode normalises the resolver selection.
+func (c exitConfig) dnsMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.DNSMode)) {
+	case "system", "custom":
+		return strings.ToLower(strings.TrimSpace(c.DNSMode))
+	default:
+		return "yggdrasil"
+	}
+}
+
+// ipv6Mode normalises the outbound address family preference.
+func (c exitConfig) ipv6Mode() string {
+	switch strings.ToLower(strings.TrimSpace(c.IPv6)) {
+	case "prefer", "off":
+		return strings.ToLower(strings.TrimSpace(c.IPv6))
+	default:
+		return "auto"
+	}
 }
 
 const (
@@ -139,9 +163,14 @@ type upstreamDialer interface {
 
 // directDialer opens ordinary sockets on the underlying network. The protector
 // is what keeps Android from routing these sockets back into the VPN.
+//
+// On the desktop there is no interface that carries Yggdrasil addresses: a
+// socket to 200::/7 has to be dialled by the node itself, so [inner] takes
+// those destinations instead of the operating system.
 type directDialer struct {
 	prot    Protector
 	timeout time.Duration
+	inner   *internalNet
 }
 
 func newDirectDialer(prot Protector, timeout time.Duration) *directDialer {
@@ -152,6 +181,13 @@ func newDirectDialer(prot Protector, timeout time.Duration) *directDialer {
 }
 
 func (d *directDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if d.inner != nil {
+		if host, _, err := net.SplitHostPort(address); err == nil {
+			if ip := net.ParseIP(host); ip != nil && yggRange.Contains(ip) {
+				return d.inner.dialContext(ctx, network, address)
+			}
+		}
+	}
 	dialer := net.Dialer{
 		Timeout: d.timeout,
 		Control: func(_, _ string, raw syscall.RawConn) error {
@@ -271,9 +307,11 @@ func parseExitConfig(raw string) (exitConfig, error) {
 		}
 	}
 	cfg.DNS = cleanServers(cfg.DNS)
-	if len(cfg.DNS) == 0 {
-		cfg.DNS = []string{"1.1.1.1", "9.9.9.9"}
-	}
+	// An empty list means "use the system resolvers for ordinary names". The
+	// old fallback to 1.1.1.1 sent every lookup through the exit even when the
+	// user never configured an exit resolver; when the exit was down or not
+	// allowlisted, every site timed out instead of falling back to the local
+	// network.
 	cfg.SystemDNS = cleanServers(cfg.SystemDNS)
 	cfg.YggDNS = cleanServers(cfg.YggDNS)
 	return cfg, nil
@@ -314,6 +352,47 @@ func (m *exitManager) config() exitConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg
+}
+
+// sameProfiles reports whether two configurations describe the same set of
+// exits. Only the profile list decides whether the manager has to be rebuilt:
+// the DNS, IPv6 and UDP switches are read from the config on every use, so they
+// can be replaced in place without dropping the relay or the health state.
+func (m *exitManager) sameProfiles(next exitConfig) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.cfg.Enabled != next.Enabled ||
+		m.cfg.ActiveID != next.ActiveID ||
+		len(m.cfg.Profiles) != len(next.Profiles) {
+		return false
+	}
+	for index, profile := range m.cfg.Profiles {
+		if profile != next.Profiles[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// updateConfig replaces the settings of a running manager. The token cache, the
+// UDP association and the measured health stay: they belong to the exit, not to
+// the resolver the user just picked.
+func (m *exitManager) updateConfig(next exitConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = next
+	live := make(map[string]struct{}, len(next.Profiles))
+	for _, profile := range next.Profiles {
+		live[profile.ID] = struct{}{}
+		if _, ok := m.health[profile.ID]; !ok {
+			m.health[profile.ID] = &profileHealth{State: exitStateUnknown}
+		}
+	}
+	for id := range m.health {
+		if _, ok := live[id]; !ok {
+			delete(m.health, id)
+		}
+	}
 }
 
 func (m *exitManager) enabled() bool {
@@ -373,6 +452,32 @@ func (m *exitManager) markAuth(id string, authenticated, required bool) {
 // not report the capability and keeps the old behaviour.
 func (m *exitManager) carriesIPv6() bool {
 	return m.ipv6Path.Load()
+}
+
+// ipv6Preference answers how the proxy should order the address families of a
+// name for the active exit: "prefer" when the exit reported a working IPv6
+// path, "avoid" when it reported none, and "" when the exit has not answered
+// yet or no exit is in use. The desktop proxy resolves names itself, so the
+// browser cannot apply its own Happy Eyeballs rule; this is what makes an exit
+// with IPv6 turned on serve IPv6 to the browser.
+func (m *exitManager) ipv6Preference() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.cfg.Enabled || len(m.cfg.Profiles) == 0 {
+		return ""
+	}
+	profile, ok := m.activeProfileLocked()
+	if !ok {
+		return ""
+	}
+	health := m.health[profile.ID]
+	if health == nil || health.IPv6Available == nil {
+		return ""
+	}
+	if *health.IPv6Available {
+		return "prefer"
+	}
+	return "avoid"
 }
 
 // markCapabilities stores what the exit said about itself: the IPv6 path and
@@ -504,6 +609,13 @@ func (m *exitManager) DialContext(ctx context.Context, network, address string) 
 			m.markSuccess(profile.ID, time.Since(started))
 			return conn, nil
 		}
+		if ctx.Err() != nil {
+			// The caller gave up: a browser closes a preconnect at once, and a
+			// page that is already loaded cancels the rest. The exit did
+			// nothing wrong, so its health must not change and the traffic
+			// must not be re-dialled directly.
+			return nil, err
+		}
 		lastErr = err
 		var reply *socksReplyError
 		if errors.As(err, &reply) {
@@ -529,8 +641,19 @@ func (m *exitManager) DialContext(ctx context.Context, network, address string) 
 	if destinationErr != nil {
 		return nil, destinationErr
 	}
+	if ctx.Err() != nil {
+		if lastErr == nil {
+			lastErr = ctx.Err()
+		}
+		return nil, lastErr
+	}
 	cfg := m.config()
-	if cfg.FallbackDirect {
+	// Only an IPv4 destination may fall back to the direct connection. A direct
+	// IPv6 connection would leave through the local uplink and show the user's
+	// own address, which is exactly what the exit is meant to hide; the proxy
+	// treats the failure as "this address is not reachable" and tries the IPv4
+	// address of the same name through the exit instead.
+	if cfg.FallbackDirect && ip.To4() != nil {
 		m.log.emit("warn", "the exit node is not reachable, using the direct connection")
 		return m.direct.DialContext(ctx, network, address)
 	}
@@ -1643,11 +1766,46 @@ func (m *exitManager) profile(id string) (ExitProfile, bool) {
 	return ExitProfile{}, false
 }
 
+// setLabel renames this client on the exit node. The source Yggdrasil address
+// is the credential: the exit derives it from the node key, so a client can
+// only rename itself and only while it is allowlisted. An exit that is older
+// than the endpoint, or one whose operator turned client labels off, answers
+// 404 or 403; both mean "the name stays local" and are not failures of the
+// tunnel.
+func (m *exitManager) setLabel(ctx context.Context, profileID, label string) error {
+	profile, ok := m.profile(profileID)
+	if !ok {
+		return errors.New("unknown_profile: the exit profile is not configured")
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]string{"label": label})
+	if err != nil {
+		return err
+	}
+	code, raw, err := m.apiCall(ctx, profile, http.MethodPost, "/v1/label", body, "")
+	if err != nil {
+		return err
+	}
+	switch code {
+	case http.StatusOK:
+		m.log.emit("info", "label of the exit client changed to %q", label)
+		return nil
+	case http.StatusNotFound:
+		return errors.New("labels_not_supported: the exit is too old for a rename")
+	case http.StatusForbidden:
+		return errors.New("labels_disabled: the exit does not let clients rename themselves")
+	}
+	return fmt.Errorf("the exit answered %d: %s", code, strings.TrimSpace(string(raw)))
+}
+
 // register redeems an invite token on the exit API. The request travels through
 // Yggdrasil, so the exit sees the node address as the source and the invite is
 // bound to it. Registration is not an exit data-path operation: it works even
 // when the exit itself is disabled, as long as the tunnel is up.
-func (m *exitManager) register(ctx context.Context, profileID, invite, address, publicKey, deviceName, appVersion string) registerResult {
+func (m *exitManager) register(ctx context.Context, profileID, invite, address, publicKey, deviceName, appVersion, label string) registerResult {
 	profile, ok := m.profile(profileID)
 	if !ok {
 		return registerResult{Error: "unknown_profile", Message: "the exit profile is not configured"}
@@ -1660,13 +1818,20 @@ func (m *exitManager) register(ctx context.Context, profileID, invite, address, 
 		return registerResult{Error: "tunnel_unavailable", Message: "the Yggdrasil stack is not available"}
 	}
 
-	body, err := json.Marshal(map[string]string{
+	// An empty label is left out of the request: an exit older than 1.7.20
+	// rejects unknown fields, and an app that has no custom name must keep
+	// working against it.
+	fields := map[string]string{
 		"invite":     strings.TrimSpace(invite),
 		"address":    address,
 		"publicKey":  publicKey,
 		"deviceName": strings.TrimSpace(deviceName),
 		"appVersion": strings.TrimSpace(appVersion),
-	})
+	}
+	if label = strings.TrimSpace(label); label != "" {
+		fields["label"] = label
+	}
+	body, err := json.Marshal(fields)
 	if err != nil {
 		return registerResult{Error: "encode_failed"}
 	}

@@ -378,25 +378,26 @@ func TestExitStatusUsesTheRenamedProfile(t *testing.T) {
 }
 
 func TestQueryDNSDatagramSkipsForeignAnswers(t *testing.T) {
+	query := dnsQuery(0xABCD, "example.com", dnsTypeA)
 	client, server := net.Pipe()
 	defer client.Close()
 	go func() {
 		defer server.Close()
-		query := make([]byte, 64)
-		n, err := server.Read(query)
+		received := make([]byte, 512)
+		n, err := server.Read(received)
 		if err != nil {
 			return
 		}
-		foreign := append([]byte(nil), query[:n]...)
+		// Another lookup of the same shared association: same shape, other id.
+		foreign := append([]byte(nil), received[:n]...)
 		foreign[0], foreign[1] = 0x11, 0x22
 		_, _ = server.Write(foreign)
-		own := append([]byte(nil), query[:n]...)
-		_, _ = server.Write(own)
+		// The same id but another name must be dropped as well.
+		other := dnsQuery(0xABCD, "evil.example", dnsTypeA)
+		_, _ = server.Write(other)
+		_, _ = server.Write(received[:n])
 	}()
 
-	query := make([]byte, 12)
-	query[0], query[1] = 0xAB, 0xCD
-	query[4], query[5] = 0, 1
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	response, err := queryDNSDatagram(ctx, func(context.Context, string, string) (net.Conn, error) {
@@ -407,6 +408,9 @@ func TestQueryDNSDatagramSkipsForeignAnswers(t *testing.T) {
 	}
 	if response[0] != 0xAB || response[1] != 0xCD {
 		t.Fatalf("a foreign answer was returned: %x", response[:2])
+	}
+	if name, _, ok := dnsQuestion(response); !ok || name != "example.com" {
+		t.Fatalf("the answer is for %q", name)
 	}
 }
 

@@ -113,6 +113,111 @@ void main() {
       expect(config.yggDns, '308:84:68:55::, 308:25:40:bd::');
       expect(config.httpPort, '7890');
     });
+
+    test('a fresh install uses Frankfurt, Amsterdam and the system proxy', () {
+      final config = CoreConfig();
+      expect(splitList(config.yggDns), ['308:84:68:55::', '308:62:45:62::']);
+      expect(config.systemProxy, isTrue);
+      // A file written before the switch existed keeps the app default too.
+      expect(CoreConfig.fromJson(const {}).systemProxy, isTrue);
+    });
+
+    test('reads the built-in catalogue of the Services page', () {
+      final config = CoreConfig.fromJson({
+        'services': [
+          {
+            'id': 'builtin:directory',
+            'title': 'Yggdrasil Web directory',
+            'url': 'http://[21e:a51c:885b:7db0:166e:927:98cd:d186]/',
+            'builtIn': true,
+          },
+          {'id': 'user:mine', 'title': 'Mine', 'url': 'http://[200::1]/'},
+        ],
+      });
+      expect(config.services, hasLength(2));
+      expect(config.services.first.id, 'builtin:directory');
+      expect(config.services.first.builtIn, isTrue);
+      expect(config.services.last.builtIn, isFalse);
+    });
+
+    test('carries the peer, DNS and exit switches of the Android client', () {
+      final config = CoreConfig.fromJson({
+        'peerCount': 5,
+        'peerAutoReplace': false,
+        'peerDeadTimeout': '2m',
+        'peerCheckInterval': '45s',
+        'dnsMode': 'custom',
+        'exitDnsEnabled': false,
+        'exitUdp': false,
+        'ipv6': 'prefer',
+      });
+      expect(config.peerCount, '5');
+      expect(config.peerAutoReplace, isFalse);
+      expect(config.peerDeadTimeoutSec, '120');
+      expect(config.peerCheckIntervalSec, '45');
+      expect(config.dnsMode, 'custom');
+      expect(config.exitDnsEnabled, isFalse);
+      expect(config.exitUdp, isFalse);
+      expect(config.ipv6, 'prefer');
+
+      final json = config.toJson(
+        privateKey: 'key',
+        peers: const [],
+        exits: const [],
+        activeId: '',
+        exitEnabled: false,
+      );
+      expect(json['peerCount'], 5);
+      expect(json['peerDeadTimeout'], '120s');
+      expect(json['peerCheckInterval'], '45s');
+      expect(json['dnsMode'], 'custom');
+      expect(json['exitDnsEnabled'], isFalse);
+      expect(json['exitUdp'], isFalse);
+      expect(json['ipv6'], 'prefer');
+    });
+  });
+
+  group('ExitStatus', () {
+    test('reads the active profile, quota and UDP state', () {
+      final status = ExitStatus.fromJson({
+        'enabled': true,
+        'state': 'online',
+        'activeId': 'e',
+        'profiles': [
+          {
+            'id': 'e',
+            'name': 'Finland',
+            'state': 'online',
+            'latencyMs': 38.5,
+            'connections': 1,
+            'maxConns': 128,
+            'dnsAddress': '201:bd5a::1',
+            'dnsPort': 53,
+            'ipv6State': 'ok',
+            'quota': {
+              'monthlyBytes': 1000,
+              'monthUsed': 250,
+              'dailyBytes': 100,
+              'dayUsed': 50,
+              'downKbps': 1000,
+            },
+          },
+        ],
+        'udp': {
+          'enabled': true,
+          'state': 'idle',
+          'bytesIn': 10,
+          'bytesOut': 20,
+        },
+      });
+      expect(status.active?.name, 'Finland');
+      expect(status.active?.latencyMs, 38.5);
+      expect(status.active?.quota?.monthUsed, 250);
+      expect(status.active?.quota?.hasLimit, isTrue);
+      expect(status.active?.quota?.hasSpeed, isTrue);
+      expect(status.udp.enabled, isTrue);
+      expect(status.udp.bytesOut, 20);
+    });
   });
 
   group('formatting', () {

@@ -1,12 +1,15 @@
 package desktop
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,29 +22,38 @@ var Version = "dev"
 
 // State is what the window reads. It is a snapshot, not a live object.
 type State struct {
-	Running      bool   `json:"running"`
-	Address      string `json:"address"`
-	Subnet       string `json:"subnet"`
-	PublicKey    string `json:"publicKey"`
-	PeersUp      int    `json:"peersUp"`
-	PeersTotal   int    `json:"peersTotal"`
-	RxBytes      uint64 `json:"rxBytes"`
-	TxBytes      uint64 `json:"txBytes"`
-	OpenConns    int64  `json:"openConnections"`
-	TotalConns   uint64 `json:"totalConnections"`
-	ExitEnabled  bool   `json:"exitEnabled"`
-	ExitName     string `json:"exitName"`
-	ExitState    string `json:"exitState"`
-	ExitDNS      string `json:"exitDns"`
-	ProxyHTTP    string `json:"proxyHttp"`
-	ProxySOCKS   string `json:"proxySocks"`
-	SystemProxy  bool   `json:"systemProxy"`
-	SystemAddr   string `json:"systemProxyAddress"`
-	LastError    string `json:"lastError"`
-	Version      string `json:"version"`
-	Platform     string `json:"platform"`
-	UptimeSecond int64  `json:"uptimeSeconds"`
-	YggVersion   string `json:"yggVersion"`
+	Running     bool   `json:"running"`
+	Address     string `json:"address"`
+	Subnet      string `json:"subnet"`
+	PublicKey   string `json:"publicKey"`
+	PeersUp     int    `json:"peersUp"`
+	PeersTotal  int    `json:"peersTotal"`
+	RxBytes     uint64 `json:"rxBytes"`
+	TxBytes     uint64 `json:"txBytes"`
+	OpenConns   int64  `json:"openConnections"`
+	TotalConns  uint64 `json:"totalConnections"`
+	ExitEnabled bool   `json:"exitEnabled"`
+	ExitInUse   bool   `json:"exitInUse"`
+	ExitName    string `json:"exitName"`
+	ExitState   string `json:"exitState"`
+	ExitDNS     string `json:"exitDns"`
+	// ExitFlag and ExitCountry place the exit server, so the tunnel screen can
+	// show the flag of the node that carries the traffic.
+	ExitFlag    string `json:"exitFlag"`
+	ExitCountry string `json:"exitCountry"`
+	ExitCity    string `json:"exitCity"`
+	// LatencyMs is the best round-trip time among the live public peers. The
+	// tunnel screen shows it where the Android client shows its latency.
+	LatencyMs    float64 `json:"latencyMs"`
+	ProxyHTTP    string  `json:"proxyHttp"`
+	ProxySOCKS   string  `json:"proxySocks"`
+	SystemProxy  bool    `json:"systemProxy"`
+	SystemAddr   string  `json:"systemProxyAddress"`
+	LastError    string  `json:"lastError"`
+	Version      string  `json:"version"`
+	Platform     string  `json:"platform"`
+	UptimeSecond int64   `json:"uptimeSeconds"`
+	YggVersion   string  `json:"yggVersion"`
 }
 
 // App owns the node, the proxy and the persisted configuration.
@@ -62,6 +74,41 @@ type App struct {
 	sysProxySet bool
 	done        chan struct{}
 	refreshDone chan struct{}
+
+	// sessionCtx belongs to one connected session. Disconnect cancels it, so an
+	// exit health check or a peer probe that is already running stops talking to
+	// the network instead of finishing after the tunnel is down.
+	sessionCtx    context.Context
+	sessionCancel context.CancelFunc
+
+	// lastRegisterAttempt throttles invite retries: the exit rate-limits the
+	// registration endpoint, so a failed attempt must not be repeated on every
+	// health tick.
+	lastRegisterAttempt time.Time
+	// labelSynced records that the client name reached the exit during this
+	// session. A rename made while the tunnel was down is sent again as soon as
+	// the exit answers.
+	labelSynced bool
+
+	// Peer supervisor state: when a configured peer was first seen down, the
+	// cached public candidates and the last check.
+	peerDownSince    map[string]time.Time
+	lastPeerCheck    time.Time
+	peerCandidates   []string
+	peerCandidatesAt time.Time
+	peerTopUpRunning bool
+
+	// The public peer catalogue and the detected location are cached: the Peers
+	// page asks for them on every visit and both need a network round-trip.
+	catalogMu sync.Mutex
+	catalog   []CatalogPeer
+	catalogAt time.Time
+	geoMu     sync.Mutex
+	geo       *geoLocation
+	geoAt     time.Time
+	// exitGeo caches the place of an exit server by its host.
+	exitGeoMu sync.Mutex
+	exitGeo   map[string]geoLocation
 }
 
 // New loads the configuration and prepares a stopped node.
@@ -81,12 +128,23 @@ func New() (*App, error) {
 		}
 	}
 	a := &App{
-		cfg:  cfg,
-		logs: NewLogBuffer(600),
-		node: yggnode.NewNode(),
-		done: make(chan struct{}),
+		cfg:           cfg,
+		logs:          NewLogBuffer(600),
+		node:          yggnode.NewNode(),
+		done:          make(chan struct{}),
+		peerDownSince: make(map[string]time.Time),
 	}
 	a.node.SetLogger(a.logs)
+	if cfg.LoggingDisabled {
+		a.logs.SetEnabled(false)
+	}
+	// The built-in services were added by normalise(): write them back so the
+	// catalogue is part of config.json instead of living only in memory.
+	if cfg.pendingSave {
+		if err := cfg.save(); err != nil {
+			a.logs.Warnf("config.json: %v", err)
+		}
+	}
 	// A core that was killed while the system proxy was on leaves the operating
 	// system pointing at a port that is no longer open.
 	recoverSystemProxy(cfg.Bind, cfg.HTTPPort)
@@ -124,13 +182,23 @@ func (a *App) SaveConfig(next Config) error {
 	next.normalise()
 	a.mu.Lock()
 	previous := a.cfg
+	// The probe rows belong to the core: the window never edits them, and a
+	// configuration sent from the page would wipe the result of the last
+	// discovery, leaving the Peers page empty after a restart.
+	next.LastProbe = previous.LastProbe
+	// The hidden catalogue entries are owned by the core as well: the window
+	// has no field for them, so a settings change must not bring a deleted
+	// built-in back. RestoreBuiltIns clears the list on its own.
+	next.HiddenServices = previous.HiddenServices
 	a.cfg = next
 	running := a.running
+	active, hasProfile := next.activeProfile()
 	a.mu.Unlock()
 
 	if err := next.save(); err != nil {
 		return err
 	}
+	a.logs.SetEnabled(!next.LoggingDisabled)
 	if !running {
 		return nil
 	}
@@ -148,7 +216,61 @@ func (a *App) SaveConfig(next Config) error {
 			return err
 		}
 	}
+	// The name the exit shows is part of the client record, so a change has to
+	// be sent to the server again; otherwise the label would only update on the
+	// next reconnect.
+	if hasProfile &&
+		(previous.ExitLabel != next.ExitLabel ||
+			previous.ExitLabelEnabled != next.ExitLabelEnabled) {
+		go a.syncExitLabel(active.ID, next.ExitLabelEnabled, next.ExitLabel)
+	}
 	return nil
+}
+
+// syncExitLabel sends the client name to the exit node. The registration
+// endpoint only applies a label to a client that is not allowlisted yet, so a
+// client that already has access renames itself through /v1/label. The source
+// address of the request is the credential: the exit derives it from the
+// Yggdrasil key and refuses to rename anybody else.
+func (a *App) syncExitLabel(profileID string, enabled bool, name string) {
+	label := deviceName()
+	if enabled {
+		if custom := strings.TrimSpace(name); custom != "" {
+			label = custom
+		}
+	}
+	raw := a.node.SetExitLabel(profileID, label)
+	var payload struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		a.logs.Warnf("exit label: %v", err)
+		return
+	}
+	if !payload.OK {
+		// A tunnel that is down or an exit that is older than /v1/label is not
+		// an error the user has to see: the name travels with the next
+		// registration as well.
+		a.logs.Infof("exit label: %s", payload.Error)
+		return
+	}
+	a.logs.Infof("exit label: %q", label)
+}
+
+// syncActiveExitLabel sends the name of the active profile. It runs after a
+// connect and once per session when the exit comes online, so a rename made
+// while the tunnel was down is applied as soon as the exit answers.
+func (a *App) syncActiveExitLabel() {
+	a.mu.Lock()
+	profile, ok := a.cfg.activeProfile()
+	enabled := a.cfg.ExitLabelEnabled
+	name := a.cfg.ExitLabel
+	a.mu.Unlock()
+	if !ok {
+		return
+	}
+	a.syncExitLabel(profile.ID, enabled, name)
 }
 
 // Connect starts the node and the local proxy.
@@ -201,7 +323,14 @@ func (a *App) Connect() error {
 	a.exitName = ""
 	a.exitDNS = ""
 	a.exitStat = ""
+	a.labelSynced = false
 	systemProxy := a.cfg.SystemProxy
+	if a.sessionCancel != nil {
+		a.sessionCancel()
+	}
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	a.sessionCtx = sessionCtx
+	a.sessionCancel = sessionCancel
 	a.mu.Unlock()
 
 	if systemProxy {
@@ -213,7 +342,28 @@ func (a *App) Connect() error {
 	close(a.done)
 	a.done = make(chan struct{})
 	a.refreshDone = make(chan struct{})
-	go a.refreshLoop(a.done, a.refreshDone)
+	go a.refreshLoop(sessionCtx, a.done, a.refreshDone)
+	// A link imported while the tunnel was down carries an unused invite.
+	// Redeem it in the background so Connect answers quickly, and ask the exit
+	// about itself right away: the first status answer is what tells the proxy
+	// whether the browser should be given IPv6 or IPv4 first, and what the
+	// card shows about the exit.
+	go func() {
+		if sessionCtx.Err() != nil {
+			return
+		}
+		a.ensureExitRegistration()
+		a.mu.Lock()
+		enabled := a.cfg.ExitEnabled && len(a.cfg.ExitProfiles) > 0
+		timeout := len(a.cfg.ExitProfiles)*6000 + 4000
+		a.mu.Unlock()
+		if !enabled || sessionCtx.Err() != nil {
+			return
+		}
+		a.node.CheckExitProfilesContext(sessionCtx, timeout)
+		a.refreshState()
+	}()
+	go a.maintainPeers(true)
 	a.refreshState()
 	a.logs.Infof("connected: %s", a.node.GetAddress())
 	return nil
@@ -223,7 +373,12 @@ func (a *App) Connect() error {
 func (a *App) Disconnect() error {
 	a.mu.Lock()
 	if !a.running {
+		cfg := a.cfg
 		a.mu.Unlock()
+		// A tunnel that is already down can still leave the system proxy on: an
+		// earlier core may have been killed before it restored the setting. The
+		// quit path calls this, so only our own address is cleared here.
+		recoverSystemProxy(cfg.Bind, cfg.HTTPPort)
 		return nil
 	}
 	proxy := a.proxy
@@ -232,8 +387,18 @@ func (a *App) Disconnect() error {
 	a.proxy = nil
 	done := a.done
 	refreshDone := a.refreshDone
+	cancel := a.sessionCancel
+	a.sessionCtx = nil
+	a.sessionCancel = nil
 	a.mu.Unlock()
 
+	// Cancel first: the health ticker may be inside CheckExitProfiles and the
+	// peer supervisor may be probing candidates. Both have to stop before the
+	// node is released, otherwise the window says "disconnected" while the
+	// process is still talking to the Yggdrasil network.
+	if cancel != nil {
+		cancel()
+	}
 	close(done)
 	if refreshDone != nil {
 		<-refreshDone
@@ -259,6 +424,17 @@ func (a *App) Shutdown() {
 	_ = a.Disconnect()
 }
 
+// sessionContext returns the context of the running session. A stopped app has
+// no session: callers that need the network return on a cancelled context.
+func (a *App) sessionContext() context.Context {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessionCtx == nil {
+		return context.Background()
+	}
+	return a.sessionCtx
+}
+
 // applySystemProxy writes or clears the per-user system proxy.
 func (a *App) applySystemProxy(enable bool) error {
 	a.mu.Lock()
@@ -280,6 +456,28 @@ func (a *App) applySystemProxy(enable bool) error {
 		a.logs.Infof("system proxy cleared")
 	}
 	return nil
+}
+
+// ensureSystemProxy re-applies the per-user proxy when the setting says it is
+// on but the operating system no longer points at this core. A previous core
+// that was killed, or another program, can clear the WinINET value while the
+// tunnel keeps running: without this the browser goes direct and the user sees
+// "some sites do not load" while the app still claims the tunnel is in use.
+func (a *App) ensureSystemProxy() {
+	a.mu.Lock()
+	wanted := a.cfg.SystemProxy && a.running
+	a.mu.Unlock()
+	if !wanted {
+		return
+	}
+	if enabled, _ := systemProxyState(); enabled {
+		return
+	}
+	if err := a.applySystemProxy(true); err != nil {
+		a.logs.Warnf("system proxy: %v", err)
+		return
+	}
+	a.logs.Infof("system proxy restored")
 }
 
 // SetSystemProxy is the switch in the window.
@@ -313,6 +511,7 @@ func (a *App) State() State {
 	state := State{
 		Running:     running,
 		ExitEnabled: cfg.ExitEnabled && len(cfg.ExitProfiles) > 0,
+		ExitInUse:   running && cfg.ExitEnabled && len(cfg.ExitProfiles) > 0 && exitStat == "online",
 		ExitName:    exitName,
 		ExitState:   exitStat,
 		ExitDNS:     exitDNS,
@@ -327,9 +526,24 @@ func (a *App) State() State {
 	if enabled, addr := systemProxyState(); enabled {
 		state.SystemProxy = true
 		state.SystemAddr = addr
+	} else if running && cfg.SystemProxy {
+		// The setting is on but the operating system does not point at this
+		// proxy any more. Reporting the setting here would tell the user the
+		// traffic is tunnelled while the browser goes direct.
+		state.SystemProxy = false
 	}
-	state.RxBytes = a.stats.Up.Load()
-	state.TxBytes = a.stats.Down.Load()
+	if profile, ok := cfg.activeProfile(); ok && cfg.ExitEnabled {
+		if place, ok := a.exitPlace(profile.Peer); ok {
+			state.ExitFlag = place.Flag
+			state.ExitCountry = place.CountryName
+			state.ExitCity = place.City
+		}
+	}
+	// Rx is what the browser received through the proxy (the download), Tx is
+	// what it sent (the upload). The proxy counts its own side, so its Down
+	// counter is the download of the client.
+	state.RxBytes = a.stats.Down.Load()
+	state.TxBytes = a.stats.Up.Load()
 	state.OpenConns = a.stats.Open.Load()
 	state.TotalConns = a.stats.TotalOpen.Load()
 	if running {
@@ -338,20 +552,56 @@ func (a *App) State() State {
 		state.PublicKey = a.node.GetPublicKey()
 		state.UptimeSecond = int64(time.Since(started).Seconds())
 		var peers []struct {
-			Up bool `json:"up"`
+			Up        bool    `json:"up"`
+			LatencyMs float64 `json:"latencyMs"`
 		}
 		if err := json.Unmarshal([]byte(a.node.GetPeersJSON()), &peers); err == nil {
 			state.PeersTotal = len(peers)
+			best := 0.0
 			for _, peer := range peers {
 				if peer.Up {
 					state.PeersUp++
+					if peer.LatencyMs > 0 && (best == 0 || peer.LatencyMs < best) {
+						best = peer.LatencyMs
+					}
 				}
 			}
+			state.LatencyMs = best
 		}
 	} else {
 		state.Address, state.Subnet, state.PublicKey = a.Identity()
 	}
 	return state
+}
+
+// exitPlace returns the cached place of an exit server and starts the lookup
+// when it is not known yet. The lookup runs once per host: the flag is a label,
+// not a live measurement.
+func (a *App) exitPlace(peerURI string) (geoLocation, bool) {
+	host := peerHost(peerURI)
+	if host == "" || strings.Contains(host, ":") {
+		// A Yggdrasil address has no country of its own.
+		return geoLocation{}, false
+	}
+	a.exitGeoMu.Lock()
+	if a.exitGeo == nil {
+		a.exitGeo = map[string]geoLocation{}
+	}
+	cached, ok := a.exitGeo[host]
+	a.exitGeoMu.Unlock()
+	if ok {
+		return cached, cached.Flag != ""
+	}
+	go func() {
+		place, found := lookupGeoAddress(host)
+		if !found {
+			return
+		}
+		a.exitGeoMu.Lock()
+		a.exitGeo[host] = place
+		a.exitGeoMu.Unlock()
+	}()
+	return geoLocation{}, false
 }
 
 // Identity returns the address, subnet and public key of the stored identity.
@@ -376,20 +626,23 @@ func (a *App) Peers() []yggnode.PeerStatus {
 	return out
 }
 
-// AddPeer stores a peer and applies it to the running node.
+// AddPeer stores a peer and applies it to the running node. A node that is in
+// the replacement pool is moved into the tunnel instead of being duplicated.
 func (a *App) AddPeer(uri string) error {
 	uri = strings.TrimSpace(uri)
 	if !isUsablePeer(uri) {
 		return errors.New("this is not a Yggdrasil peer URI")
 	}
+	host := peerHost(uri)
 	a.mu.Lock()
 	for _, existing := range a.cfg.Peers {
-		if existing == uri {
+		if existing == uri || peerHost(existing) == host {
 			a.mu.Unlock()
-			return nil
+			return errors.New("this peer is already in the tunnel")
 		}
 	}
 	a.cfg.Peers = append(a.cfg.Peers, uri)
+	a.cfg.Pool = removePeerURI(a.cfg.Pool, uri)
 	cfg := a.cfg
 	running := a.running
 	a.mu.Unlock()
@@ -430,6 +683,40 @@ func (a *App) RemovePeer(uri string) error {
 	return nil
 }
 
+// RemovePoolPeer drops one spare node from the replacement pool.
+func (a *App) RemovePoolPeer(uri string) error {
+	a.mu.Lock()
+	a.cfg.Pool = removePeerURI(a.cfg.Pool, uri)
+	cfg := a.cfg
+	a.mu.Unlock()
+	return cfg.save()
+}
+
+func removePeerURI(list []string, uri string) []string {
+	out := make([]string, 0, len(list))
+	for _, existing := range list {
+		if existing != uri {
+			out = append(out, existing)
+		}
+	}
+	return out
+}
+
+func peerHost(uri string) string {
+	trimmed := strings.TrimSpace(uri)
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		// A malformed entry must not collapse into the empty key and make every
+		// other broken entry look like the same server.
+		return trimmed
+	}
+	return host
+}
+
 // ExitProfiles returns the configured exit nodes.
 func (a *App) ExitProfiles() ([]ExitProfile, string, bool) {
 	a.mu.Lock()
@@ -437,17 +724,137 @@ func (a *App) ExitProfiles() ([]ExitProfile, string, bool) {
 	return append([]ExitProfile(nil), a.cfg.ExitProfiles...), a.cfg.ExitActiveID, a.cfg.ExitEnabled
 }
 
-// AddExitLink imports a yggnode://exit link and makes it active.
+// EditExit replaces one profile by its id, or adds it when the id is new. The
+// invite and the token are kept when the window leaves them empty, so a form
+// that was opened before the exit issued a token does not wipe it.
+func (a *App) EditExit(next ExitProfile) (ExitProfile, error) {
+	next.Name = strings.TrimSpace(next.Name)
+	next.Address = strings.TrimSpace(next.Address)
+	next.Peer = strings.TrimSpace(next.Peer)
+	next.Invite = strings.TrimSpace(next.Invite)
+	next.Token = strings.TrimSpace(next.Token)
+	if !isYggdrasilAddress(next.Address) {
+		return ExitProfile{}, errors.New("the address is not a Yggdrasil address")
+	}
+	if next.SocksPort < 1 || next.SocksPort > 65535 {
+		return ExitProfile{}, errors.New("the SOCKS port is invalid")
+	}
+	if next.APIPort == 0 {
+		next.APIPort = next.SocksPort
+	}
+	if next.APIPort < 1 || next.APIPort > 65535 {
+		return ExitProfile{}, errors.New("the API port is invalid")
+	}
+	if next.Name == "" {
+		next.Name = next.Address
+	}
+	if next.Peer != "" && !isUsablePeer(next.Peer) {
+		return ExitProfile{}, errors.New("the peer address is not a Yggdrasil peering URI")
+	}
+	a.mu.Lock()
+	replaced := false
+	for index, existing := range a.cfg.ExitProfiles {
+		if existing.ID != next.ID {
+			continue
+		}
+		if next.Invite == "" {
+			next.Invite = existing.Invite
+		}
+		if next.Token == "" {
+			next.Token = existing.Token
+		}
+		next.Registered = existing.Registered
+		if next.DNS == "" {
+			next.DNS = existing.DNS
+			next.DNSPort = existing.DNSPort
+		}
+		a.cfg.ExitProfiles[index] = next
+		replaced = true
+		break
+	}
+	if !replaced {
+		if next.ID == "" {
+			next.ID = fmt.Sprintf("%s:%d", next.Address, next.SocksPort)
+		}
+		a.cfg.ExitProfiles = append(a.cfg.ExitProfiles, next)
+		if a.cfg.ExitActiveID == "" {
+			a.cfg.ExitActiveID = next.ID
+		}
+	}
+	cfg := a.cfg
+	running := a.running
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		return ExitProfile{}, err
+	}
+	if running {
+		if err := a.node.SetDesktopExitConfig(cfg.exitJSON()); err != nil {
+			return next, err
+		}
+	}
+	return next, nil
+}
+
+// ReorderExits applies the order of the ids to the profile list.
+func (a *App) ReorderExits(ids []string) error {
+	a.mu.Lock()
+	byID := make(map[string]ExitProfile, len(a.cfg.ExitProfiles))
+	for _, profile := range a.cfg.ExitProfiles {
+		byID[profile.ID] = profile
+	}
+	next := make([]ExitProfile, 0, len(a.cfg.ExitProfiles))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		profile, ok := byID[id]
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		next = append(next, profile)
+	}
+	for _, profile := range a.cfg.ExitProfiles {
+		if !seen[profile.ID] {
+			next = append(next, profile)
+		}
+	}
+	a.cfg.ExitProfiles = next
+	cfg := a.cfg
+	a.mu.Unlock()
+	return cfg.save()
+}
+
+// SaveProbeResults stores the rows of a latency test. The Peers page reads them
+// back after a restart instead of showing an empty discovery card.
+func (a *App) SaveProbeResults(rows []ProbeEntry) {
+	a.mu.Lock()
+	a.cfg.LastProbe = rows
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		a.logs.Warnf("save probe results: %v", err)
+	}
+}
+
+// AddExitLink imports a yggnode://exit link and makes it active. The invite is
+// stored even when the tunnel is down: registration is retried after connect,
+// so importing a link before the first connection does not leave the client
+// outside the allowlist.
 func (a *App) AddExitLink(link string) (ExitProfile, error) {
 	profile, invite, err := ParseExitLink(link)
 	if err != nil {
 		return ExitProfile{}, err
 	}
+	profile.Invite = invite
+	profile.Registered = false
 	a.mu.Lock()
 	replaced := false
 	for index, existing := range a.cfg.ExitProfiles {
 		if existing.ID == profile.ID {
 			profile.Token = existing.Token
+			if invite == "" {
+				profile.Invite = existing.Invite
+				profile.Registered = existing.Registered
+			}
 			a.cfg.ExitProfiles[index] = profile
 			replaced = true
 			break
@@ -459,51 +866,115 @@ func (a *App) AddExitLink(link string) (ExitProfile, error) {
 	a.cfg.ExitActiveID = profile.ID
 	a.cfg.ExitEnabled = true
 	cfg := a.cfg
+	running := a.running
 	a.mu.Unlock()
 	if err := cfg.save(); err != nil {
 		return ExitProfile{}, err
 	}
 
+	// The bridge only knows the profiles from the last apply. Install the new
+	// list before redeeming the invite, otherwise RegisterExit answers
+	// "unknown_profile" even though the profile is already in config.json.
+	a.applyExitConfig()
+
 	if invite != "" {
-		result := a.node.RegisterExit(profile.ID, invite, deviceName(), "Y-Node Desktop "+Version)
-		var payload struct {
-			OK      bool   `json:"ok"`
-			Token   string `json:"token"`
-			DNSAddr string `json:"dnsAddress"`
-			DNSPort int    `json:"dnsPort"`
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}
-		if err := json.Unmarshal([]byte(result), &payload); err == nil {
-			if payload.OK {
-				a.mu.Lock()
-				for index, existing := range a.cfg.ExitProfiles {
-					if existing.ID != profile.ID {
-						continue
-					}
-					if payload.Token != "" {
-						a.cfg.ExitProfiles[index].Token = payload.Token
-						profile.Token = payload.Token
-					}
-					if payload.DNSAddr != "" {
-						a.cfg.ExitProfiles[index].DNS = payload.DNSAddr
-						a.cfg.ExitProfiles[index].DNSPort = payload.DNSPort
-						profile.DNS = payload.DNSAddr
-						profile.DNSPort = payload.DNSPort
-					}
-				}
-				cfg = a.cfg
-				a.mu.Unlock()
-				_ = cfg.save()
-				a.logs.Infof("registered with exit %s", profile.Name)
-			} else {
-				a.logs.Warnf("exit registration: %s %s", payload.Error, payload.Message)
-			}
+		if running {
+			a.registerExit(profile.ID, invite)
+		} else {
+			a.logs.Infof("exit %s: the invite is redeemed after the tunnel connects", profile.Name)
 		}
 	}
 
-	a.applyExitConfig()
-	return profile, nil
+	return a.exitProfile(profile.ID)
+}
+
+// registerExit redeems one invite and stores what the answer carries. A failed
+// attempt leaves Registered false, so ensureExitRegistration retries later.
+func (a *App) registerExit(profileID, invite string) {
+	a.mu.Lock()
+	a.lastRegisterAttempt = time.Now()
+	label := ""
+	if a.cfg.ExitLabelEnabled {
+		label = strings.TrimSpace(a.cfg.ExitLabel)
+		if label == "" {
+			label = deviceName()
+		}
+	}
+	a.mu.Unlock()
+
+	result := a.node.RegisterExit(profileID, invite, deviceName(), "Y-Node Desktop "+Version, label)
+	var payload struct {
+		OK      bool   `json:"ok"`
+		Token   string `json:"token"`
+		DNSAddr string `json:"dnsAddress"`
+		DNSPort int    `json:"dnsPort"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		a.logs.Warnf("exit registration: %v", err)
+		return
+	}
+	if !payload.OK {
+		a.logs.Warnf("exit registration: %s %s", payload.Error, payload.Message)
+		return
+	}
+
+	a.mu.Lock()
+	for index, existing := range a.cfg.ExitProfiles {
+		if existing.ID != profileID {
+			continue
+		}
+		a.cfg.ExitProfiles[index].Registered = true
+		if payload.Token != "" {
+			a.cfg.ExitProfiles[index].Token = payload.Token
+		}
+		if payload.DNSAddr != "" {
+			a.cfg.ExitProfiles[index].DNS = payload.DNSAddr
+			a.cfg.ExitProfiles[index].DNSPort = payload.DNSPort
+		}
+	}
+	cfg := a.cfg
+	name := profileID
+	for _, profile := range cfg.ExitProfiles {
+		if profile.ID == profileID {
+			name = profile.Name
+		}
+	}
+	a.mu.Unlock()
+	_ = cfg.save()
+	a.logs.Infof("registered with exit %s", name)
+}
+
+// ensureExitRegistration redeems the stored invite of the active profile when
+// the tunnel is up and the profile has not been registered yet. It is called
+// after connect, before a check and from the health loop, so a link imported
+// while the node was down becomes usable without the user pressing anything.
+func (a *App) ensureExitRegistration() {
+	a.mu.Lock()
+	running := a.running
+	profile, ok := a.cfg.activeProfile()
+	if !running || !ok || profile.Registered || strings.TrimSpace(profile.Token) != "" ||
+		strings.TrimSpace(profile.Invite) == "" ||
+		time.Since(a.lastRegisterAttempt) < 90*time.Second {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+	a.registerExit(profile.ID, profile.Invite)
+}
+
+// exitProfile returns one profile by id after the registration may have changed
+// it.
+func (a *App) exitProfile(id string) (ExitProfile, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, profile := range a.cfg.ExitProfiles {
+		if profile.ID == id {
+			return profile, nil
+		}
+	}
+	return ExitProfile{}, errors.New("unknown exit profile")
 }
 
 func deviceName() string {
@@ -532,6 +1003,10 @@ func (a *App) RemoveExit(id string) error {
 	}
 	if len(next) == 0 {
 		a.cfg.ExitEnabled = false
+		// The resolver of the removed node is not a local resolver: leaving it
+		// in exitDns made every ordinary lookup go to an address only the
+		// Yggdrasil network can reach, which broke the proxy for normal sites.
+		a.cfg.ExitDNS = nil
 	}
 	cfg := a.cfg
 	a.mu.Unlock()
@@ -564,6 +1039,7 @@ func (a *App) SetExitActive(id string) error {
 		return err
 	}
 	a.applyExitConfig()
+	a.ensureExitRegistration()
 	return nil
 }
 
@@ -600,15 +1076,383 @@ func (a *App) applyExitConfig() {
 	}
 }
 
-// CheckExit asks every profile's status API whether this client is allowed.
+// CheckExit asks every profile's status API whether this client is allowed and
+// returns a short report the window shows in a dialog. The report always has an
+// "ok" field: the window used to look for it in the raw status JSON, which does
+// not carry one, so every check ended with "The exit node did not answer".
 func (a *App) CheckExit() string {
 	a.mu.Lock()
 	running := a.running
+	profiles := append([]ExitProfile(nil), a.cfg.ExitProfiles...)
+	activeID := a.cfg.ExitActiveID
 	a.mu.Unlock()
 	if !running {
-		return `{"enabled":false,"state":"off","profiles":[]}`
+		return `{"ok":false,"message":"The tunnel is not running. Connect first."}`
 	}
-	return a.node.CheckExitProfiles(9000)
+	if len(profiles) == 0 {
+		return `{"ok":false,"message":"No exit node is configured."}`
+	}
+	// A check is the natural moment to redeem a pending invite: the user is
+	// asking why the node does not answer, and the answer may be "the invite
+	// was never registered".
+	a.ensureExitRegistration()
+	timeout := len(profiles)*6000 + 4000
+	raw := a.node.CheckExitProfiles(timeout)
+	var status struct {
+		State    string `json:"state"`
+		ActiveID string `json:"activeId"`
+		Profiles []struct {
+			ID         string  `json:"id"`
+			Name       string  `json:"name"`
+			State      string  `json:"state"`
+			LatencyMs  float64 `json:"latencyMs"`
+			Error      string  `json:"error"`
+			DNSAddress string  `json:"dnsAddress"`
+			DNSPort    int     `json:"dnsPort"`
+			Suspended  bool    `json:"suspended"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"ok": false, "message": "The exit status could not be read: " + err.Error(),
+		})
+		return string(payload)
+	}
+	active := status.ActiveID
+	if active == "" {
+		active = activeID
+	}
+	name := ""
+	for _, profile := range status.Profiles {
+		if active == "" || profile.ID == active {
+			name = profile.Name
+			if profile.State == "online" {
+				message := name + " answered"
+				if profile.LatencyMs > 0 {
+					message += fmt.Sprintf(" in %.0f ms", profile.LatencyMs)
+				}
+				if profile.DNSAddress != "" {
+					message += fmt.Sprintf(" · DNS %s", net.JoinHostPort(profile.DNSAddress, fmt.Sprint(profile.DNSPort)))
+				}
+				payload, _ := json.Marshal(map[string]any{
+					"ok":         true,
+					"state":      profile.State,
+					"message":    message,
+					"dnsAddress": profile.DNSAddress,
+					"dnsPort":    profile.DNSPort,
+				})
+				return string(payload)
+			}
+			message := name + " did not answer"
+			switch profile.State {
+			case "denied":
+				message = name + " is not in the allowlist"
+				if profile.Suspended {
+					message = name + " suspended this client"
+				}
+			case "unreachable":
+				if profile.Error != "" {
+					message = name + " is unreachable: " + profile.Error
+				}
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"ok":      false,
+				"state":   profile.State,
+				"message": message,
+			})
+			return string(payload)
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"ok":      false,
+		"state":   status.State,
+		"message": "The active exit node is not in the status answer.",
+	})
+	return string(payload)
+}
+
+// CheckDNS probes a list of resolvers and returns the JSON array the window
+// shows. In-network servers are checked through the node (they resolve real
+// .ygg names), ordinary ones directly (they resolve example.com).
+func (a *App) CheckDNS(servers []string, direct bool) string {
+	if len(servers) == 0 {
+		return `[]`
+	}
+	if !direct {
+		payload, _ := json.Marshal(servers)
+		return a.node.CheckDNS(string(payload), 8000)
+	}
+	out := make([]json.RawMessage, 0, len(servers))
+	for _, server := range servers {
+		out = append(out, json.RawMessage(a.node.CheckSystemDNS(server, 8000)))
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return `[]`
+	}
+	return string(raw)
+}
+
+// SetPeerSettings stores how many automatic peers the supervisor keeps and
+// whether a dead one may be replaced. The change applies at once.
+func (a *App) SetPeerSettings(count int, autoReplace bool) error {
+	if count < 1 {
+		count = 1
+	}
+	if count > 20 {
+		count = 20
+	}
+	a.mu.Lock()
+	a.cfg.PeerCount = count
+	a.cfg.PeerAutoReplace = autoReplace
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		return err
+	}
+	go a.maintainPeers(true)
+	return nil
+}
+
+// maintainPeers keeps the configured peer list at the requested size, the way
+// the Android supervisor does: a peer that stays down for the dead timeout is
+// dropped and replaced with a probed candidate, and a short list is topped up.
+func (a *App) maintainPeers(force bool) {
+	ctx := a.sessionContext()
+	if ctx.Err() != nil {
+		return
+	}
+	a.mu.Lock()
+	if !a.running {
+		a.mu.Unlock()
+		return
+	}
+	interval, _ := time.ParseDuration(a.cfg.PeerCheckInterval)
+	if interval < 10*time.Second {
+		interval = 30 * time.Second
+	}
+	if !force && time.Since(a.lastPeerCheck) < interval {
+		a.mu.Unlock()
+		return
+	}
+	a.lastPeerCheck = time.Now()
+	deadTimeout, _ := time.ParseDuration(a.cfg.PeerDeadTimeout)
+	if deadTimeout < 30*time.Second {
+		deadTimeout = 90 * time.Second
+	}
+	want := a.cfg.PeerCount
+	autoReplace := a.cfg.PeerAutoReplace
+	configured := append([]string(nil), a.cfg.Peers...)
+	a.mu.Unlock()
+
+	live := map[string]bool{}
+	var rows []struct {
+		URI string `json:"uri"`
+		Up  bool   `json:"up"`
+	}
+	if err := json.Unmarshal([]byte(a.node.GetPeersJSON()), &rows); err == nil {
+		// The node reports the URI it was given, but a normalised link (the
+		// pinned exit peer loses its query, a transport may be rewritten) must
+		// still count as the same server: comparing hosts keeps a live peer
+		// from being replaced. Two transports of one host collapse into one
+		// entry, and a single live transport is enough.
+		for _, row := range rows {
+			host := peerHost(row.URI)
+			live[host] = live[host] || row.Up
+		}
+	}
+
+	now := time.Now()
+	a.mu.Lock()
+	changed := false
+	kept := make([]string, 0, len(configured))
+	for _, uri := range configured {
+		if live[peerHost(uri)] {
+			delete(a.peerDownSince, uri)
+			kept = append(kept, uri)
+			continue
+		}
+		since, ok := a.peerDownSince[uri]
+		if !ok {
+			a.peerDownSince[uri] = now
+		}
+		if autoReplace && ok && now.Sub(since) > deadTimeout {
+			a.logs.Warnf("peer %s is down for %s, replacing it", uri, deadTimeout)
+			delete(a.peerDownSince, uri)
+			changed = true
+			continue
+		}
+		kept = append(kept, uri)
+	}
+	if changed {
+		// The replacement pool is the first source: those nodes answered a probe
+		// and are already known, so no download is needed to keep the list full.
+		for len(kept) < want && len(a.cfg.Pool) > 0 {
+			kept = append(kept, a.cfg.Pool[0])
+			a.cfg.Pool = a.cfg.Pool[1:]
+		}
+		a.cfg.Peers = kept
+	}
+	cfg := a.cfg
+	a.mu.Unlock()
+	if changed {
+		if err := cfg.save(); err != nil {
+			a.logs.Warnf("save peers: %v", err)
+		}
+		if payload, err := json.Marshal(cfg.peerList()); err == nil {
+			if err := a.node.SetPeers(string(payload)); err != nil {
+				a.logs.Warnf("apply peers: %v", err)
+			}
+		}
+	}
+	// "want" is the size of the configured list, not the number of links that
+	// are up: a peer that is still connecting must not be duplicated by a
+	// candidate. Only a list shorter than the target is topped up.
+	if len(kept) < want && ctx.Err() == nil {
+		go a.topUpPeers(ctx, want-len(kept))
+	}
+}
+
+// topUpPeers appends the fastest public candidates until the configured list
+// has the requested size. Candidates are cached for ten minutes, so a flapping
+// peer does not download the catalogue on every check. The context is the
+// tunnel session: a probe that is still running when the user disconnects stops
+// at once and its result is dropped.
+func (a *App) topUpPeers(ctx context.Context, need int) {
+	if need <= 0 || ctx.Err() != nil {
+		return
+	}
+	a.mu.Lock()
+	if a.peerTopUpRunning {
+		a.mu.Unlock()
+		return
+	}
+	a.peerTopUpRunning = true
+	// The replacement pool comes first: those nodes were probed already.
+	fromPool := need
+	if fromPool > len(a.cfg.Pool) {
+		fromPool = len(a.cfg.Pool)
+	}
+	if fromPool > 0 {
+		a.cfg.Peers = append(a.cfg.Peers, a.cfg.Pool[:fromPool]...)
+		a.cfg.Pool = a.cfg.Pool[fromPool:]
+	}
+	cfg := a.cfg
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.peerTopUpRunning = false
+		a.mu.Unlock()
+	}()
+	if fromPool > 0 {
+		if err := cfg.save(); err != nil {
+			a.logs.Warnf("save peers: %v", err)
+		} else if payload, err := json.Marshal(cfg.peerList()); err == nil {
+			if err := a.node.SetPeers(string(payload)); err != nil {
+				a.logs.Warnf("apply peers: %v", err)
+			}
+		}
+		need -= fromPool
+	}
+	if need <= 0 {
+		return
+	}
+	a.mu.Lock()
+	candidates := append([]string(nil), a.peerCandidates...)
+	fresh := time.Since(a.peerCandidatesAt) < 10*time.Minute
+	a.mu.Unlock()
+	if len(candidates) == 0 || !fresh {
+		if ctx.Err() != nil {
+			return
+		}
+		list := a.DiscoveryTargets(120)
+		if ctx.Err() != nil {
+			return
+		}
+		if len(list) == 0 {
+			a.logs.Warnf("public peers: the catalogue is not available")
+			list = append([]string(nil), seedPeers...)
+		}
+		a.mu.Lock()
+		a.peerCandidates = list
+		a.peerCandidatesAt = time.Now()
+		a.mu.Unlock()
+		candidates = list
+	}
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	a.mu.Lock()
+	known := make(map[string]bool, len(a.cfg.Peers))
+	for _, uri := range a.cfg.Peers {
+		known[peerHost(uri)] = true
+	}
+	a.mu.Unlock()
+	probe := make([]string, 0, 24)
+	for _, uri := range candidates {
+		if known[peerHost(uri)] {
+			continue
+		}
+		probe = append(probe, uri)
+		if len(probe) >= 24 {
+			break
+		}
+	}
+	if len(probe) == 0 {
+		return
+	}
+	payload, _ := json.Marshal(probe)
+	raw := yggnode.ProbePeersContext(ctx, string(payload), 12000, a.logs)
+	if ctx.Err() != nil {
+		return
+	}
+	var results []struct {
+		URI       string  `json:"uri"`
+		Up        bool    `json:"up"`
+		LatencyMs float64 `json:"latencyMs"`
+	}
+	if err := json.Unmarshal([]byte(raw), &results); err != nil {
+		return
+	}
+	up := make([]struct {
+		uri     string
+		latency float64
+	}, 0, len(results))
+	for _, result := range results {
+		if result.Up {
+			up = append(up, struct {
+				uri     string
+				latency float64
+			}{result.URI, result.LatencyMs})
+		}
+	}
+	sort.Slice(up, func(i, j int) bool { return up[i].latency < up[j].latency })
+	if len(up) > need {
+		up = up[:need]
+	}
+	if len(up) == 0 {
+		return
+	}
+	a.mu.Lock()
+	for _, item := range up {
+		a.cfg.Peers = append(a.cfg.Peers, item.uri)
+	}
+	cfg = a.cfg
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		a.logs.Warnf("save peers: %v", err)
+		return
+	}
+	if payload, err := json.Marshal(cfg.peerList()); err == nil {
+		if err := a.node.SetPeers(string(payload)); err != nil {
+			a.logs.Warnf("apply peers: %v", err)
+		}
+	}
+	for _, item := range up {
+		a.logs.Infof("peer added: %s (%.0f ms)", item.uri, item.latency)
+	}
 }
 
 // ExitStatus returns the last exit state as JSON.
@@ -616,25 +1460,37 @@ func (a *App) ExitStatus() string {
 	return a.node.GetExitStatusJSON()
 }
 
-// refreshLoop keeps the snapshot fresh and polls the exit health.
-func (a *App) refreshLoop(done <-chan struct{}, finished chan<- struct{}) {
+// refreshLoop keeps the snapshot fresh and polls the exit health. The context
+// is cancelled by Disconnect: a check that is already running returns instead
+// of keeping the node busy after the tunnel is down.
+func (a *App) refreshLoop(ctx context.Context, done <-chan struct{}, finished chan<- struct{}) {
 	defer close(finished)
 	ticker := time.NewTicker(2 * time.Second)
-	health := time.NewTicker(30 * time.Second)
+	// The exit is asked every 15 seconds, the same cadence the Android client
+	// uses: a setting changed on the server (IPv6 off, for example) has to show
+	// up on the card without the user pressing "Check now".
+	health := time.NewTicker(15 * time.Second)
+	peers := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	defer health.Stop()
+	defer peers.Stop()
 	for {
 		select {
 		case <-done:
 			return
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
 			a.refreshState()
+		case <-peers.C:
+			a.maintainPeers(false)
 		case <-health.C:
 			a.mu.Lock()
 			enabled := a.cfg.ExitEnabled && len(a.cfg.ExitProfiles) > 0
 			a.mu.Unlock()
-			if enabled {
-				a.node.CheckExitProfiles(9000)
+			if enabled && ctx.Err() == nil {
+				a.ensureExitRegistration()
+				a.node.CheckExitProfilesContext(ctx, 9000)
 				a.refreshState()
 			}
 		}
@@ -647,6 +1503,7 @@ func (a *App) refreshState() {
 	if !a.node.IsRunning() {
 		return
 	}
+	a.ensureSystemProxy()
 	raw := a.node.GetExitStatusJSON()
 	var status struct {
 		State    string `json:"state"`
@@ -682,6 +1539,15 @@ func (a *App) refreshState() {
 	a.exitName = name
 	a.exitStat = status.State
 	changed := false
+	// The resolver the exit publishes belongs to the "DNS exit node" switch: it
+	// is added to the in-network list by exitJSON and never written into the
+	// public Exit DNS list. The config of the running node still has to follow a
+	// resolver that appeared or changed.
+	resolverChanged := false
+	labelPending := status.State == "online" && !a.labelSynced
+	if labelPending {
+		a.labelSynced = true
+	}
 	for _, item := range status.Profiles {
 		for index, profile := range a.cfg.ExitProfiles {
 			if profile.ID != item.ID {
@@ -689,32 +1555,34 @@ func (a *App) refreshState() {
 			}
 			if item.Token != "" && item.Token != profile.Token {
 				a.cfg.ExitProfiles[index].Token = item.Token
+				a.cfg.ExitProfiles[index].Registered = true
+				// The invite stays in the profile: the Exit page shows it in the
+				// edit form, and the same one-time secret is what the Android
+				// client keeps for a repeated registration.
 				changed = true
 			}
 			if item.DNSKnown && item.DNSAddress != "" && profile.DNS != item.DNSAddress {
 				a.cfg.ExitProfiles[index].DNS = item.DNSAddress
 				a.cfg.ExitProfiles[index].DNSPort = item.DNSPort
 				changed = true
+				resolverChanged = true
 			}
 		}
 	}
-	previousDNS := a.exitDNS
 	a.exitDNS = dns
 	if changed {
 		cfg := a.cfg
 		_ = cfg.save()
 	}
-	dnsChanged := dns != "" && dns != previousDNS && len(a.cfg.ExitDNS) > 0 && a.cfg.ExitDNS[0] != dns
-	if dnsChanged {
-		a.cfg.ExitDNS = []string{dns}
-		cfg := a.cfg
-		_ = cfg.save()
-		a.mu.Unlock()
-		a.logs.Infof("exit resolver: %s", dns)
-		if err := a.node.SetDesktopExitConfig(cfg.exitJSON()); err != nil {
-			a.logs.Warnf("exit configuration: %v", err)
-		}
-		return
-	}
 	a.mu.Unlock()
+	if labelPending {
+		// The tunnel is up and the exit answers: send the client name that was
+		// changed while it was down. The call goes through the tunnel, so it
+		// must not hold the status loop.
+		go a.syncActiveExitLabel()
+	}
+	if resolverChanged {
+		a.logs.Infof("exit resolver: %s", dns)
+		a.applyExitConfig()
+	}
 }

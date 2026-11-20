@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -28,6 +29,11 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
+    // A logon launch waits in the tray: showing the first frame would flash a
+    // window before the Dart side can hide it again.
+    if (HasCommandLineFlag(L"--tray")) {
+      return;
+    }
     this->Show();
   });
 

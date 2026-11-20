@@ -36,6 +36,22 @@ echo "==> embedding the core"
 cp "$core/bin/y-node-core" "$bundle/y-node-core"
 chmod +x "$bundle/y-node-core"
 
+# The window and the tray use the same icon as the Android app. The .desktop
+# file is meant for a system-wide install (copy the directory to /opt and the
+# desktop file to /usr/share/applications); the tarball keeps it next to the
+# binary so a package builder can pick it up.
+cp "$app/assets/tray_icon.png" "$bundle/y-node-desktop.png"
+cat > "$bundle/y-node-desktop.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Y-Node
+Comment=Yggdrasil client with a local proxy
+Exec=y-node-desktop
+Icon=y-node-desktop
+Terminal=false
+Categories=Network;
+EOF
+
 dist="$root/dist/linux"
 rm -rf "$dist"
 mkdir -p "$dist"

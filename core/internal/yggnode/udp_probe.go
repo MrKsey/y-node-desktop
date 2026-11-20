@@ -352,6 +352,18 @@ func firstDNSAAAA(msg []byte, id uint16) net.IP {
 
 // firstDNSRecord returns the first record of the wanted type and data length.
 func firstDNSRecord(msg []byte, id, recordType uint16, length int) net.IP {
+	records := dnsRecords(msg, id, recordType, length)
+	if len(records) == 0 {
+		return nil
+	}
+	return records[0]
+}
+
+// dnsRecords returns every record of the wanted type and data length in the
+// order the server sent them. A name usually has several addresses and the
+// first one is not always the one that answers: a CDN node that refuses the
+// exit's address must not hide the rest of the answer.
+func dnsRecords(msg []byte, id, recordType uint16, length int) []net.IP {
 	if len(msg) < 12 || binary.BigEndian.Uint16(msg[0:2]) != id {
 		return nil
 	}
@@ -369,21 +381,22 @@ func firstDNSRecord(msg []byte, id, recordType uint16, length int) net.IP {
 		}
 		offset = next + 4
 	}
+	var out []net.IP
 	for i := 0; i < answers; i++ {
 		next, ok := skipDNSName(msg, offset)
 		if !ok || next+10 > len(msg) {
-			return nil
+			break
 		}
 		answerType := binary.BigEndian.Uint16(msg[next : next+2])
 		answerLength := int(binary.BigEndian.Uint16(msg[next+8 : next+10]))
 		data := next + 10
 		if data+answerLength > len(msg) {
-			return nil
+			break
 		}
 		if answerType == recordType && answerLength == length {
-			return net.IP(append([]byte(nil), msg[data:data+length]...))
+			out = append(out, net.IP(append([]byte(nil), msg[data:data+length]...)))
 		}
 		offset = data + answerLength
 	}
-	return nil
+	return out
 }

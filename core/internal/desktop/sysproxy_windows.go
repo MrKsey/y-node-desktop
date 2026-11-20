@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -182,7 +184,9 @@ func systemProxyState() (bool, string) {
 
 // recoverSystemProxy clears a setting left behind by a core that was killed
 // before it could shut down. Only an address that points at this app is
-// touched; a proxy of the user is never rewritten.
+// touched; a proxy of the user is never rewritten. A core that is still
+// listening on that port owns the setting, so a second instance starting next
+// to it leaves the running tunnel alone.
 func recoverSystemProxy(host string, port int) {
 	enabled, server := systemProxyState()
 	if !enabled {
@@ -192,5 +196,20 @@ func recoverSystemProxy(host string, port int) {
 	if server != host+":"+strconv.Itoa(port) {
 		return
 	}
+	if proxyPortAlive(host, port) {
+		return
+	}
 	_ = setSystemProxy(false, "", 0)
+}
+
+// proxyPortAlive reports whether something already accepts connections on the
+// address the system proxy points at.
+func proxyPortAlive(host string, port int) bool {
+	address := net.JoinHostPort(host, strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", address, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }

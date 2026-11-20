@@ -134,7 +134,14 @@ func (p *Proxy) handleConnect(rw http.ResponseWriter, r *http.Request) {
 	upstream, err := p.dial(ctx, "tcp", target)
 	cancel()
 	if err != nil {
-		p.log.Warnf("CONNECT %s: %v", target, err)
+		// A browser opens a preconnect and drops it again, and a page that is
+		// already loaded cancels the rest: the client is gone, the tunnel is
+		// fine, so the line is not a warning about the exit node.
+		if r.Context().Err() != nil {
+			p.log.Log("debug", fmt.Sprintf("CONNECT %s: the client gave up", target))
+		} else {
+			p.log.Warnf("CONNECT %s: %v", target, err)
+		}
 		http.Error(rw, "cannot connect: "+err.Error(), http.StatusBadGateway)
 		return
 	}

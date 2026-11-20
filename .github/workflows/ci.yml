@@ -59,15 +59,39 @@ jobs:
         working-directory: app
         run: flutter test
 
-  release:
-    name: Release (${{ matrix.os }})
+  version:
+    name: Check the tag
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [core, app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the tag with pubspec.yaml
+        run: |
+          version=$(sed -n 's/^version: \([^+]*\).*/\1/p' app/pubspec.yaml | head -n1)
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag pubspec=$version"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::The tag v$tag does not match the version $version in app/pubspec.yaml"
+            exit 1
+          fi
+
+  release:
+    name: Release (${{ matrix.artifact }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [core, app, version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            artifact: windows-x64
+          - os: macos-13
+            artifact: macos-x64
+          - os: macos-14
+            artifact: macos-arm64
+          - os: ubuntu-latest
+            artifact: linux-x64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -78,49 +102,91 @@ jobs:
         with:
           channel: stable
       - name: Install Linux build dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev ninja-build cmake clang pkg-config
-      - name: Build (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/build-windows.ps1 -Version ${{ github.ref_name }} -SkipMsix
+        run: choco install innosetup --no-progress -y
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v',''
+          ./scripts/build-windows.ps1 -Version $version
       - name: Build (macOS)
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: ./scripts/build-macos.sh "${GITHUB_REF_NAME#v}"
       - name: Build (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: ./scripts/build-linux.sh "${GITHUB_REF_NAME#v}"
-      - name: Archive (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: Compress-Archive -Path dist/windows/* -DestinationPath "dist/y-node-desktop-${env:GITHUB_REF_NAME}-windows-x64.zip"
       - name: Archive (macOS)
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: |
           cd dist/macos
-          zip -qry "../../y-node-desktop-${GITHUB_REF_NAME}-macos.zip" Y-Node.app
+          zip -qry "../y-node-desktop-${GITHUB_REF_NAME#v}-${{ matrix.artifact }}.zip" Y-Node.app
       - uses: actions/upload-artifact@v4
         with:
-          name: y-node-desktop-${{ matrix.os }}
+          name: y-node-desktop-${{ matrix.artifact }}
           path: |
             dist/*.zip
+            dist/*.exe
             dist/*.tar.gz
+          if-no-files-found: error
+
+  checksums:
+    name: Checksums
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Build SHA256SUMS.txt
+        run: |
+          cd artifacts
+          find . -type f -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: artifacts/SHA256SUMS.txt
           if-no-files-found: error
 
   publish:
     name: Publish the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: release
+    needs: [release, checksums]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Collect the release files
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -l release
+      - name: Read the changelog section
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            $0 ~ "^## " ver "([[:space:]]|$)" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Y-Node Desktop $version" > release-notes.md
+          fi
+          cat release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
-          generate_release_notes: true
+          body_path: release-notes.md
+          files: release/*
+          fail_on_unmatched_files: true

@@ -117,13 +117,10 @@ func (a *App) AutoPeers(count int) ([]string, error) {
 	if count < 1 {
 		count = 3
 	}
-	candidates, err := a.PublicPeers()
-	if err != nil {
-		a.logs.Warnf("public peers: %v", err)
+	candidates := a.DiscoveryTargets(32)
+	if len(candidates) == 0 {
+		a.logs.Warnf("public peers: the catalogue is not available, the built-in seeds are used")
 		candidates = append([]string(nil), seedPeers...)
-	}
-	if len(candidates) > 32 {
-		candidates = candidates[:32]
 	}
 	payload, _ := json.Marshal(candidates)
 	raw := yggnode.ProbePeers(string(payload), 15000, a.logs)
@@ -179,8 +176,109 @@ func (a *App) AutoPeers(count int) ([]string, error) {
 	return chosen, nil
 }
 
+// probeAndStore measures the given peers and keeps the rows for the Peers page.
+// Every discovery path goes through it, so the result survives a restart no
+// matter which button started the round.
+//
+// A full round replaces the stored rows; a check of a few peers only refreshes
+// their rows and keeps the rest, so testing one node from the browser does not
+// wipe the list a discovery just produced.
+func (a *App) probeAndStore(uris []string, timeoutMs int, replace bool) string {
+	payload, _ := json.Marshal(uris)
+	report := yggnode.ProbePeers(string(payload), timeoutMs, a.logs)
+	var rows []ProbeEntry
+	if err := json.Unmarshal([]byte(report), &rows); err != nil || len(rows) == 0 {
+		return report
+	}
+	if replace {
+		a.SaveProbeResults(rows)
+		return report
+	}
+	a.mergeProbeResults(rows)
+	return report
+}
+
+// mergeProbeResults replaces the stored rows of the measured peers and keeps
+// the others, so a partial round adds to the list instead of shrinking it.
+func (a *App) mergeProbeResults(rows []ProbeEntry) {
+	a.mu.Lock()
+	merged := make([]ProbeEntry, 0, len(a.cfg.LastProbe)+len(rows))
+	index := make(map[string]int, len(a.cfg.LastProbe))
+	for _, row := range a.cfg.LastProbe {
+		index[row.URI] = len(merged)
+		merged = append(merged, row)
+	}
+	for _, row := range rows {
+		if row.URI == "" {
+			continue
+		}
+		if at, ok := index[row.URI]; ok {
+			merged[at] = row
+			continue
+		}
+		index[row.URI] = len(merged)
+		merged = append(merged, row)
+	}
+	a.cfg.LastProbe = merged
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		a.logs.Warnf("save probe results: %v", err)
+	}
+}
+
 // ProbePeers checks the given peers and returns the live rows.
 func (a *App) ProbePeers(uris []string) string {
 	payload, _ := json.Marshal(uris)
 	return yggnode.ProbePeers(string(payload), 12000, a.logs)
+}
+
+// SetPeers replaces the configured public peer list and the replacement pool in
+// one go. The pinned peer of the active exit node is added on top by peerList
+// and is never stored here.
+func (a *App) SetPeers(uris []string, pool []string) error {
+	next := uniquePeers(uris)
+	a.mu.Lock()
+	a.cfg.Peers = next
+	a.cfg.Pool = uniquePeers(pool)
+	cfg := a.cfg
+	running := a.running
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		return err
+	}
+	if running {
+		payload, _ := json.Marshal(cfg.peerList())
+		if err := a.node.SetPeers(string(payload)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CatalogPeers probes the public peer list and returns every answer without
+// touching the configuration: the Peers page shows the rows and lets the user
+// pick which ones to keep, like the Android peer catalogue.
+func (a *App) CatalogPeers() (string, error) {
+	candidates := a.DiscoveryTargets(32)
+	if len(candidates) == 0 {
+		candidates = append([]string(nil), seedPeers...)
+	}
+	payload, _ := json.Marshal(candidates)
+	return yggnode.ProbePeers(string(payload), 15000, a.logs), nil
+}
+
+// PublicIP reports the address a remote service sees for this device.
+func (a *App) PublicIP(via string) string {
+	return a.node.PublicIP(via, 12000)
+}
+
+// TestExitUDP checks the UDP relay and the QUIC handshake of the active exit.
+func (a *App) TestExitUDP() string {
+	return a.node.TestExitUDP(12000)
+}
+
+// TestExitIPv6 checks the IPv6 path through the active exit.
+func (a *App) TestExitIPv6() string {
+	return a.node.TestExitIPv6(12000)
 }

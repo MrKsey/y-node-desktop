@@ -1,0 +1,81 @@
+package desktop
+
+import "testing"
+
+func TestBestPerHostKeepsTheBestTransport(t *testing.T) {
+	peers := []CatalogPeer{
+		{URI: "quic://a.example:1", Host: "a.example", Scheme: "quic"},
+		{URI: "tcp://a.example:2", Host: "a.example", Scheme: "tcp"},
+		{URI: "tls://a.example:3", Host: "a.example", Scheme: "tls"},
+		{URI: "wss://b.example:443", Host: "b.example", Scheme: "wss"},
+	}
+	got := bestPerHost(peers)
+	if len(got) != 2 {
+		t.Fatalf("bestPerHost returned %d rows, want 2: %v", len(got), got)
+	}
+	if got[0].URI != "tls://a.example:3" {
+		t.Fatalf("the first host kept %q, want the tls transport", got[0].URI)
+	}
+	if got[1].URI != "wss://b.example:443" {
+		t.Fatalf("the second host = %q, want the untouched row", got[1].URI)
+	}
+}
+
+func TestBestPerHostIgnoresRowsWithoutAHost(t *testing.T) {
+	got := bestPerHost([]CatalogPeer{{URI: "tls:///broken"}, {URI: "tls://a.example:1", Host: "a.example", Scheme: "tls"}})
+	if len(got) != 1 || got[0].Host != "a.example" {
+		t.Fatalf("bestPerHost = %v, want only the row with a host", got)
+	}
+}
+
+// A country with more servers than the limit keeps the first ones, and the
+// neighbours never push a home server out of the round.
+func TestDiscoveryTargetsCoversEveryHomeServer(t *testing.T) {
+	peers := []CatalogPeer{
+		{URI: "tls://msk-1.example:1", Host: "msk-1.example", Country: "russia", Scheme: "tls"},
+		{URI: "tcp://msk-1.example:2", Host: "msk-1.example", Country: "russia", Scheme: "tcp"},
+		{URI: "tls://msk-2.example:1", Host: "msk-2.example", Country: "russia", Scheme: "tls"},
+		{URI: "tls://spb-1.example:1", Host: "spb-1.example", Country: "russia", Scheme: "tls"},
+		{URI: "tls://fi-1.example:1", Host: "fi-1.example", Country: "finland", Scheme: "tls"},
+		{URI: "tls://am-1.example:1", Host: "am-1.example", Country: "armenia", Scheme: "tls"},
+	}
+	got := discoveryTargets(peers, "russia", 4)
+	if len(got) != 4 {
+		t.Fatalf("targets = %d, want the limit 4: %v", len(got), got)
+	}
+	hosts := map[string]bool{}
+	for _, uri := range got {
+		hosts[peerHost(uri)] = true
+	}
+	for _, host := range []string{"msk-1.example", "msk-2.example", "spb-1.example"} {
+		if !hosts[host] {
+			t.Fatalf("the home server %s is missing from %v", host, got)
+		}
+	}
+}
+
+func TestDiscoveryTargetsFallsBackToTheClosestCountries(t *testing.T) {
+	peers := []CatalogPeer{
+		{URI: "tls://fi-1.example:1", Host: "fi-1.example", Country: "finland", Scheme: "tls"},
+		{URI: "tls://de-1.example:1", Host: "de-1.example", Country: "germany", Scheme: "tls"},
+	}
+	got := discoveryTargets(peers, "russia", 10)
+	if len(got) != 2 {
+		t.Fatalf("targets = %v, want both neighbours when the home country is empty", got)
+	}
+}
+
+func TestDiscoveryTargetsRespectsTheLimit(t *testing.T) {
+	var peers []CatalogPeer
+	for _, host := range []string{"a", "b", "c", "d", "e"} {
+		peers = append(peers, CatalogPeer{
+			URI:     "tls://" + host + ".example:1",
+			Host:    host + ".example",
+			Country: "russia",
+			Scheme:  "tls",
+		})
+	}
+	if got := discoveryTargets(peers, "russia", 3); len(got) != 3 {
+		t.Fatalf("targets = %v, want 3", got)
+	}
+}

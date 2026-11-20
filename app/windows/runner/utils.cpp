@@ -3,6 +3,7 @@
 #include <flutter_windows.h>
 #include <io.h>
 #include <stdio.h>
+#include <string.h>
 #include <windows.h>
 
 #include <iostream>
@@ -39,6 +40,25 @@ std::vector<std::string> GetCommandLineArguments() {
   ::LocalFree(argv);
 
   return command_line_arguments;
+}
+
+bool HasCommandLineFlag(const wchar_t* flag) {
+  int argc;
+  wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  if (argv == nullptr) {
+    return false;
+  }
+
+  bool found = false;
+  for (int i = 1; i < argc; i++) {
+    if (::_wcsicmp(argv[i], flag) == 0) {
+      found = true;
+      break;
+    }
+  }
+
+  ::LocalFree(argv);
+  return found;
 }
 
 std::string Utf8FromUtf16(const wchar_t* utf16_string) {

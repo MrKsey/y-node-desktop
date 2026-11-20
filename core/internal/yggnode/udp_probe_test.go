@@ -56,6 +56,45 @@ func TestFirstDNSAddress(t *testing.T) {
 	}
 }
 
+// dnsAnswerAll builds one A answer that carries every address of the record.
+func dnsAnswerAll(id uint16, name string, ips []net.IP) []byte {
+	msg := buildDNSQueryA(id, name)
+	binary.BigEndian.PutUint16(msg[2:4], 0x8180)
+	binary.BigEndian.PutUint16(msg[6:8], uint16(len(ips)))
+	for _, ip := range ips {
+		msg = append(msg, 0xC0, 0x0C)
+		msg = binary.BigEndian.AppendUint16(msg, 1) // A
+		msg = binary.BigEndian.AppendUint16(msg, 1) // IN
+		msg = binary.BigEndian.AppendUint32(msg, 60)
+		msg = binary.BigEndian.AppendUint16(msg, 4)
+		msg = append(msg, ip.To4()...)
+	}
+	return msg
+}
+
+func TestDNSRecordsReturnsEveryAddress(t *testing.T) {
+	want := []net.IP{
+		net.ParseIP("185.199.108.133"),
+		net.ParseIP("185.199.111.133"),
+		net.ParseIP("185.199.109.133"),
+		net.ParseIP("185.199.110.133"),
+	}
+	msg := dnsAnswerAll(0x4242, "avatars.githubusercontent.com", want)
+	got := dnsRecords(msg, 0x4242, dnsTypeA, 4)
+	if len(got) != len(want) {
+		t.Fatalf("addresses = %v", got)
+	}
+	for index, ip := range want {
+		if !got[index].Equal(ip) {
+			t.Fatalf("address %d = %v, want %v", index, got[index], ip)
+		}
+	}
+	// The first address is still what the single-address helper returns.
+	if first := firstDNSAddress(msg, 0x4242); !first.Equal(want[0]) {
+		t.Fatalf("first address = %v", first)
+	}
+}
+
 func TestDescribeUDPError(t *testing.T) {
 	cases := []struct {
 		err  error

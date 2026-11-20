@@ -30,8 +30,17 @@ func TestParseExitConfig(t *testing.T) {
 	if cfg.Profiles[0].ID != "200::1:1080" {
 		t.Fatalf("default id = %q", cfg.Profiles[0].ID)
 	}
-	if len(cfg.DNS) == 0 {
-		t.Fatal("default DNS servers were not filled in")
+	// No exit resolver is configured, so ordinary names must use the system
+	// resolvers rather than a hidden 1.1.1.1 default.
+	if len(cfg.DNS) != 0 {
+		t.Fatalf("an empty DNS list gained servers: %v", cfg.DNS)
+	}
+	explicit, err := parseExitConfig(`{"enabled":true,"profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}],"dns":["9.9.9.9"]}`)
+	if err != nil {
+		t.Fatalf("parseExitConfig: %v", err)
+	}
+	if len(explicit.DNS) != 1 || explicit.DNS[0] != "9.9.9.9" {
+		t.Fatalf("explicit DNS = %v", explicit.DNS)
 	}
 }
 
@@ -43,6 +52,46 @@ func TestParseExitConfigRejectsBadProfile(t *testing.T) {
 	_, err = parseExitConfig(`{"enabled":true,"profiles":[{"address":"200::1","socksPort":0,"apiPort":1081}]}`)
 	if err == nil {
 		t.Fatal("a zero SOCKS port was accepted")
+	}
+}
+
+// TestUpdateConfigKeepsHealth covers the DNS-mode switch: the resolver lists
+// change, the exit does not, so the running manager keeps the relay and the
+// measured state instead of being rebuilt for one poll.
+func TestUpdateConfigKeepsHealth(t *testing.T) {
+	before, err := parseExitConfig(`{"enabled":true,"profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}],"activeId":"200::1:1080","dnsMode":"yggdrasil"}`)
+	if err != nil {
+		t.Fatalf("parseExitConfig: %v", err)
+	}
+	manager := &exitManager{
+		cfg:    before,
+		health: map[string]*profileHealth{"200::1:1080": {State: exitStateOnline, LatencyMs: 42}},
+		tokens: map[string]string{"200::1:1080": "secret"},
+	}
+	after, err := parseExitConfig(`{"enabled":true,"profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}],"activeId":"200::1:1080","dnsMode":"system","systemDns":["192.168.1.2"]}`)
+	if err != nil {
+		t.Fatalf("parseExitConfig: %v", err)
+	}
+	if !manager.sameProfiles(after) {
+		t.Fatal("a DNS-only change was treated as a profile change")
+	}
+	manager.updateConfig(after)
+	if manager.config().dnsMode() != "system" {
+		t.Fatalf("dns mode = %q", manager.config().dnsMode())
+	}
+	if health := manager.health["200::1:1080"]; health == nil || health.State != exitStateOnline || health.LatencyMs != 42 {
+		t.Fatalf("health was lost: %+v", health)
+	}
+	if manager.profileToken(ExitProfile{ID: "200::1:1080"}) != "secret" {
+		t.Fatal("the learned token was lost")
+	}
+
+	renamed, err := parseExitConfig(`{"enabled":true,"profiles":[{"name":"renamed","address":"200::1","socksPort":1080,"apiPort":1081}],"activeId":"200::1:1080"}`)
+	if err != nil {
+		t.Fatalf("parseExitConfig: %v", err)
+	}
+	if manager.sameProfiles(renamed) {
+		t.Fatal("a renamed profile kept the old manager")
 	}
 }
 
@@ -186,6 +235,47 @@ func TestExitCarriesIPv6FollowsTheActiveProfile(t *testing.T) {
 	unknown.markCapabilities("200::1:1080", &exitAPICapabilities{IPv6: false, IPv6State: "none"})
 	if !unknown.carriesIPv6() {
 		t.Fatal("an unpolled active profile must count as a possible IPv6 path")
+	}
+}
+
+// The desktop proxy resolves names itself, so the browser cannot apply its own
+// Happy Eyeballs rule: the family order has to follow what the exit reported.
+// An exit with a working IPv6 path gets the AAAA query first, an exit with IPv6
+// off gets IPv4 only, and an exit that has not answered yet keeps IPv4 first.
+func TestResolveOrderFollowsTheExit(t *testing.T) {
+	manager, err := newExitManager(`{"enabled":true,"profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}]}`, nil, nil, &goLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := NewNode()
+	node.exit = manager
+
+	order := node.resolveOrder("example.com")
+	if len(order) != 2 || order[0] != dnsTypeA {
+		t.Fatalf("an unpolled exit order = %v, want A first", order)
+	}
+	manager.markCapabilities("200::1:1080", &exitAPICapabilities{IPv6: true, IPv6State: "ok"})
+	order = node.resolveOrder("example.com")
+	if len(order) != 2 || order[0] != dnsTypeAAAA {
+		t.Fatalf("an IPv6 exit order = %v, want AAAA first", order)
+	}
+	manager.markCapabilities("200::1:1080", &exitAPICapabilities{IPv6: false, IPv6State: "off"})
+	order = node.resolveOrder("example.com")
+	if len(order) != 1 || order[0] != dnsTypeA {
+		t.Fatalf("an IPv4-only exit order = %v, want A only", order)
+	}
+
+	// Without an exit the machine keeps its own IPv6 path, so both families
+	// are still asked for.
+	disabled, err := newExitManager(`{"enabled":false,"profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}]}`, nil, nil, &goLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct := NewNode()
+	direct.exit = disabled
+	order = direct.resolveOrder("example.com")
+	if len(order) != 2 || order[0] != dnsTypeA || order[1] != dnsTypeAAAA {
+		t.Fatalf("a direct order = %v, want A and AAAA", order)
 	}
 }
 
