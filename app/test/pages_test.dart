@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:y_node_desktop/app_state.dart';
@@ -156,7 +158,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('Connect on launch'), findsOneWidget);
-    expect(find.text('Start with Windows'), findsOneWidget);
+    // The startup entry is a Windows registry value: other platforms do not
+    // offer the switch at all.
+    expect(
+      find.text('Start with Windows'),
+      Platform.isWindows ? findsOneWidget : findsNothing,
+    );
     // The launch switch belongs to the tray block, not to Connection. Section
     // titles are upper-cased by the card itself.
     expect(find.text('TRAY AND LAUNCH'), findsOneWidget);
