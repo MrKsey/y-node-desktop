@@ -1,5 +1,7 @@
 # Y-Node Desktop
 
+**English** · [Русский](README.ru.md)
+
 **Y-Node Desktop** is a Yggdrasil network client for Windows, macOS and Linux.
 It runs a Yggdrasil node in a separate core process, exposes a local HTTP and
 SOCKS5 proxy and can switch the system proxy to that port with one click. The
