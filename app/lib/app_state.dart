@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -159,18 +160,25 @@ class AppState extends ChangeNotifier {
   Future<void> refresh() async {
     if (_client == null || _stateBusy) return;
     _stateBusy = true;
+    // A snapshot that did not change must not rebuild the window: the poll runs
+    // every second, and repainting the whole page for the same answer kept an
+    // idle client at several percent of CPU.
+    var changed = false;
     try {
       final data = await client.get(
         '/v1/state',
         timeout: const Duration(seconds: 5),
       );
       if (data is Map<String, dynamic>) {
-        state = TunnelState.fromJson(data);
+        final next = TunnelState.fromJson(data);
+        changed = !next.sameAs(state);
+        state = next;
       }
       _stateFailures = 0;
       if (_stateErrorShown) {
         _stateErrorShown = false;
         error = null;
+        changed = true;
       }
     } catch (e) {
       // The poll runs every second and the core is allowed to be busy for a
@@ -187,11 +195,18 @@ class AppState extends ChangeNotifier {
       _stateBusy = false;
     }
     _syncDns();
-    notifyListeners();
+    if (changed) notifyListeners();
   }
+
+  /// The answer of the last successful `/v1/peers`, `/v1/exit` and
+  /// `/v1/exit/status` run. The slow poll runs every four seconds and most of
+  /// its answers are identical; comparing them keeps the page from rebuilding
+  /// for nothing.
+  String _listsSignature = '';
 
   Future<void> refreshLists() async {
     if (_client == null) return;
+    var signature = '';
     try {
       final peersJson = await client.get('/v1/peers');
       if (peersJson is Map) {
@@ -227,9 +242,12 @@ class AppState extends ChangeNotifier {
       if (statusJson is Map<String, dynamic>) {
         exitStatus = ExitStatus.fromJson(statusJson);
       }
+      signature = jsonEncode([peersJson, exitJson, statusJson]);
     } catch (_) {
       // The fast loop reports the connection errors; lists are best effort.
     }
+    if (signature.isEmpty || signature == _listsSignature) return;
+    _listsSignature = signature;
     notifyListeners();
   }
 

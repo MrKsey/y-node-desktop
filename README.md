@@ -243,15 +243,15 @@ without Flutter and the window without Go.
 ### Windows (x64, portable ZIP and installer)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.7
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.8
 ```
 
 Produces:
 
 * `dist\windows\` — the plain bundle, runnable without installation;
-* `dist\y-node-desktop-1.5.7-windows-x64.zip` — the portable archive with
+* `dist\y-node-desktop-1.5.8-windows-x64.zip` — the portable archive with
   `install-windows.ps1` and `uninstall-windows.ps1`;
-* `dist\y-node-desktop-1.5.7-x64-setup.exe` — an Inno Setup installer, built
+* `dist\y-node-desktop-1.5.8-x64-setup.exe` — an Inno Setup installer, built
   when Inno Setup is installed (`winget install JRSoftware.InnoSetup`).
 
 The installer puts the application into **Program Files** for every user and
@@ -267,24 +267,24 @@ files replaced.
 ### macOS
 
 ```bash
-./scripts/build-macos.sh 1.5.7
+./scripts/build-macos.sh 1.5.8
 ```
 
 Needs Xcode command line tools and Flutter. The script builds the core for the
 architecture of the machine, embeds it in `Contents/MacOS`, signs the bundle ad
 hoc, writes `dist/macos/Y-Node.app` and packs the same bundle into
-`dist/y-node-desktop-1.5.7-macos-<arch>.pkg`, an installer that puts the app
+`dist/y-node-desktop-1.5.8-macos-<arch>.pkg`, an installer that puts the app
 into **Applications** for every user.
 
 ### Linux
 
 ```bash
-./scripts/build-linux.sh 1.5.7
+./scripts/build-linux.sh 1.5.8
 ```
 
 Needs the GTK 3 development headers (`libgtk-3-dev`), `ninja-build`, `cmake`,
 `clang` and Flutter. Writes `dist/linux/y-node-desktop/`, a tarball next to it
-and, when `dpkg-deb` is available, `dist/y-node-desktop-1.5.7-linux-x64.deb`.
+and, when `dpkg-deb` is available, `dist/y-node-desktop-1.5.8-linux-x64.deb`.
 The package installs into `/opt/y-node-desktop`, adds `/usr/bin/y-node-desktop`,
 a menu entry and an icon.
 

@@ -252,8 +252,17 @@ func loadConfig() (Config, error) {
 	_ = json.Unmarshal(raw, &stored)
 	_, hasServices := stored["services"]
 	before := len(cfg.Services)
+	servicesBefore, _ := json.Marshal(cfg.Services)
+	hiddenBefore, _ := json.Marshal(cfg.HiddenServices)
 	cfg.normalise()
-	if !hasServices || len(cfg.Services) != before {
+	servicesAfter, _ := json.Marshal(cfg.Services)
+	hiddenAfter, _ := json.Marshal(cfg.HiddenServices)
+	// normalise() also repairs a catalogue entry the user pointed at another
+	// address; that change has to reach the file, or the badge would be
+	// recomputed on every start.
+	if !hasServices || len(cfg.Services) != before ||
+		string(servicesBefore) != string(servicesAfter) ||
+		string(hiddenBefore) != string(hiddenAfter) {
 		cfg.pendingSave = true
 	}
 	return cfg, nil
@@ -338,6 +347,7 @@ func (c *Config) normalise() {
 	} else {
 		c.ExitLabel = string(runes)
 	}
+	c.Services, c.HiddenServices = demoteEditedBuiltIns(c.Services, c.HiddenServices)
 	c.Services = withBuiltInServices(c.Services, c.HiddenServices)
 	c.HiddenServices = uniqueStrings(c.HiddenServices)
 	c.Pool = uniquePeers(c.Pool)

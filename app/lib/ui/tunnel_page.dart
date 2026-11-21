@@ -26,16 +26,20 @@ class TunnelPage extends StatefulWidget {
 }
 
 class _TunnelPageState extends State<TunnelPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _pulse = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1400),
   );
 
+  /// False while the window is in the tray or the system suspended it: an
+  /// animation nobody sees only asks the engine for frames.
+  bool _onScreen = true;
+
   @override
   void initState() {
     super.initState();
-    _pulse.repeat();
+    WidgetsBinding.instance.addObserver(this);
     // The flag on the exit icon and the country of every peer come from the
     // public list, the same background load the Android client runs.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -48,7 +52,43 @@ class _TunnelPageState extends State<TunnelPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // AppScope is an InheritedNotifier, so this runs on every poll of the
+    // state as well: the pulse follows the link without a second listener.
+    _syncPulse();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _onScreen = state == AppLifecycleState.resumed;
+    _syncPulse();
+  }
+
+  /// The pulse drives the flow dots and the ring of a starting connection. A
+  /// controller that repeats while the tunnel is down kept the window at
+  /// several percent of CPU and allocated a frame every vsync, which is what
+  /// made an idle client look busy and grow in memory. It runs only while the
+  /// link is up or a connection is starting, and only while the window is on
+  /// screen.
+  void _syncPulse() {
+    if (!mounted) return;
+    final app = AppScope.of(context);
+    final run =
+        _onScreen && (app.state.running || app.busy || app.searchingPeers);
+    if (run) {
+      if (!_pulse.isAnimating) _pulse.repeat();
+      return;
+    }
+    if (_pulse.isAnimating) {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pulse.dispose();
     super.dispose();
   }

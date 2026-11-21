@@ -178,3 +178,113 @@ func TestBuiltInServicesSurviveAConfigRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// A resource the user adds is never built in, whatever the file said before.
+func TestSaveServiceKeepsAUserEntryPlain(t *testing.T) {
+	isolateConfig(t)
+	a := &App{cfg: DefaultConfig()}
+	a.cfg.normalise()
+	saved, err := a.SaveService(ServiceEntry{Title: "2ip", URL: "https://2ip.io"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.BuiltIn {
+		t.Fatal("a new resource is marked as built in")
+	}
+	for _, entry := range a.Services() {
+		if entry.URL == "https://2ip.io" && entry.BuiltIn {
+			t.Fatalf("%s is shown as built in", entry.ID)
+		}
+	}
+}
+
+// A stale "builtIn" value in the file must not turn a user entry into a
+// catalogue one.
+func TestWithBuiltInServicesClearsAStaleFlag(t *testing.T) {
+	got := withBuiltInServices([]ServiceEntry{
+		{ID: "user:https://2ip.io", Title: "2ip", URL: "https://2ip.io", BuiltIn: true},
+	}, nil)
+	for _, entry := range got {
+		if entry.URL == "https://2ip.io" {
+			if entry.BuiltIn {
+				t.Fatal("the stale flag survived the merge")
+			}
+			return
+		}
+	}
+	t.Fatal("the user entry is missing")
+}
+
+// Editing a built-in into another address makes it a user resource: the badge
+// belongs to the catalogue, and the original default goes to the hidden list.
+func TestEditingABuiltInIntoAnotherAddressDropsTheBadge(t *testing.T) {
+	isolateConfig(t)
+	a := &App{cfg: DefaultConfig()}
+	a.cfg.normalise()
+	saved, err := a.SaveService(ServiceEntry{
+		ID:    "builtin:myip",
+		Title: "2ip",
+		URL:   "https://2ip.io",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.BuiltIn {
+		t.Fatalf("%s still carries the built-in badge", saved.ID)
+	}
+	if saved.ID == "builtin:myip" {
+		t.Fatal("the catalogue id was kept")
+	}
+	hidden := a.HiddenServices()
+	found := false
+	for _, id := range hidden {
+		if id == "builtin:myip" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the original default is not hidden: %v", hidden)
+	}
+	for _, entry := range a.Services() {
+		if entry.ID == "builtin:myip" {
+			t.Fatal("the original default is still in the list")
+		}
+		if entry.URL == "https://2ip.io" && entry.BuiltIn {
+			t.Fatal("the edited resource is shown as built in")
+		}
+	}
+}
+
+// A file written by an older build keeps the catalogue id on an edited entry.
+// The migration in normalise() has to repair it, or the badge comes back.
+func TestNormaliseDemotesAnEditedCatalogueEntry(t *testing.T) {
+	isolateConfig(t)
+	cfg := DefaultConfig()
+	for index, entry := range cfg.Services {
+		if entry.ID == "builtin:myip" {
+			cfg.Services[index].URL = "https://2ip.io"
+			cfg.Services[index].Title = "2ip"
+			cfg.Services[index].BuiltIn = true
+		}
+	}
+	cfg.normalise()
+	for _, entry := range cfg.Services {
+		if entry.URL == "https://2ip.io" {
+			if entry.BuiltIn {
+				t.Fatalf("%s still carries the badge after normalise", entry.ID)
+			}
+			if entry.ID == "builtin:myip" {
+				t.Fatal("the catalogue id survived the migration")
+			}
+		}
+	}
+	hidden := false
+	for _, id := range cfg.HiddenServices {
+		if id == "builtin:myip" {
+			hidden = true
+		}
+	}
+	if !hidden {
+		t.Fatalf("the original default is not hidden: %v", cfg.HiddenServices)
+	}
+}

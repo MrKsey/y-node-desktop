@@ -63,6 +63,39 @@ class TunnelState {
   final String yggVersion;
   final int uptimeSeconds;
 
+  /// Whether two snapshots would paint the same window. The window polls the
+  /// core once a second; rebuilding every page for an answer that did not
+  /// change kept an idle client awake and allocated a snapshot per tick.
+  bool sameAs(TunnelState other) =>
+      running == other.running &&
+      address == other.address &&
+      subnet == other.subnet &&
+      publicKey == other.publicKey &&
+      peersUp == other.peersUp &&
+      peersTotal == other.peersTotal &&
+      rxBytes == other.rxBytes &&
+      txBytes == other.txBytes &&
+      openConnections == other.openConnections &&
+      totalConnections == other.totalConnections &&
+      exitEnabled == other.exitEnabled &&
+      exitInUse == other.exitInUse &&
+      exitName == other.exitName &&
+      exitState == other.exitState &&
+      exitDns == other.exitDns &&
+      exitFlag == other.exitFlag &&
+      exitCountry == other.exitCountry &&
+      exitCity == other.exitCity &&
+      latencyMs == other.latencyMs &&
+      proxyHttp == other.proxyHttp &&
+      proxySocks == other.proxySocks &&
+      systemProxy == other.systemProxy &&
+      systemProxyAddress == other.systemProxyAddress &&
+      lastError == other.lastError &&
+      version == other.version &&
+      platform == other.platform &&
+      yggVersion == other.yggVersion &&
+      uptimeSeconds == other.uptimeSeconds;
+
   factory TunnelState.fromJson(Map<String, dynamic> json) => TunnelState(
     running: json['running'] as bool? ?? false,
     address: json['address'] as String? ?? '',

@@ -112,11 +112,10 @@ func withBuiltInServices(current []ServiceEntry, hidden []string) []ServiceEntry
 		if entry.Title == "" {
 			entry.Title = entry.URL
 		}
-		// The window does not send the flag back, and the core owns it: a
-		// saved configuration must not turn a built-in entry into a plain one.
-		if builtIn[entry.ID] {
-			entry.BuiltIn = true
-		}
+		// The flag belongs to the catalogue, not to the file: a user entry is
+		// never built in, even when an older build or a hand-edited
+		// configuration left a "builtIn" value behind.
+		entry.BuiltIn = builtIn[entry.ID]
 		out = append(out, entry)
 	}
 	return out
@@ -129,6 +128,28 @@ func builtInServiceIDs() map[string]bool {
 		ids[entry.ID] = true
 	}
 	return ids
+}
+
+// demoteEditedBuiltIns turns a catalogue entry that was pointed at another
+// address into a user resource and remembers the original default as hidden.
+// The "built in" badge belongs to the address the catalogue ships, not to the
+// id: without this, an entry the user edited kept the badge, and an older build
+// could leave such an entry in config.json.
+func demoteEditedBuiltIns(services []ServiceEntry, hidden []string) ([]ServiceEntry, []string) {
+	defaults := make(map[string]string, len(builtInServices()))
+	for _, entry := range builtInServices() {
+		defaults[entry.ID] = entry.URL
+	}
+	out := make([]ServiceEntry, 0, len(services))
+	for _, entry := range services {
+		if url, ok := defaults[entry.ID]; ok && !sameServiceURL(url, entry.URL) {
+			hidden = append(hidden, entry.ID)
+			entry.ID = userServiceID(entry.URL)
+			entry.BuiltIn = false
+		}
+		out = append(out, entry)
+	}
+	return out, hidden
 }
 
 // Services returns the whole ordered list of the Services page. The built-in
@@ -178,23 +199,51 @@ func (a *App) SaveService(entry ServiceEntry) (ServiceEntry, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if entry.ID == "" {
-		entry.ID = "user:" + strings.ReplaceAll(strings.ToLower(entry.URL), " ", "")
+		entry.ID = userServiceID(entry.URL)
 		entry.BuiltIn = false
 	}
 	// An edited entry is visible again: a default that was deleted and then
 	// saved under its own id must leave the hidden list.
 	a.cfg.HiddenServices = withoutString(a.cfg.HiddenServices, entry.ID)
 	for index, existing := range a.cfg.Services {
-		if existing.ID == entry.ID {
-			entry.BuiltIn = existing.BuiltIn
+		if existing.ID != entry.ID {
+			continue
+		}
+		// A built-in pointed at another address is no longer that catalogue
+		// entry: keeping its id would keep the "built in" badge on a site the
+		// catalogue does not own. It becomes a user resource and the original
+		// default is remembered as hidden instead.
+		if existing.BuiltIn && !sameServiceURL(existing.URL, entry.URL) {
+			entry.ID = userServiceID(entry.URL)
+			entry.BuiltIn = false
+			a.cfg.HiddenServices = uniqueStrings(append(a.cfg.HiddenServices, existing.ID))
 			a.cfg.Services[index] = entry
 			cfg := a.cfg
 			return entry, cfg.save()
 		}
+		entry.BuiltIn = existing.BuiltIn
+		a.cfg.Services[index] = entry
+		cfg := a.cfg
+		return entry, cfg.save()
 	}
 	a.cfg.Services = append(a.cfg.Services, entry)
 	cfg := a.cfg
 	return entry, cfg.save()
+}
+
+// userServiceID is the id of a resource the user added. The catalogue owns the
+// "builtin:" prefix, so a user entry can never inherit a built-in badge.
+func userServiceID(rawURL string) string {
+	return "user:" + strings.ReplaceAll(strings.ToLower(strings.TrimSpace(rawURL)), " ", "")
+}
+
+// sameServiceURL compares two addresses the way the page shows them: without
+// the trailing slash and without case.
+func sameServiceURL(left, right string) bool {
+	return strings.EqualFold(
+		strings.TrimRight(strings.TrimSpace(left), "/"),
+		strings.TrimRight(strings.TrimSpace(right), "/"),
+	)
 }
 
 // RemoveService deletes one entry by its id. A built-in entry is remembered as

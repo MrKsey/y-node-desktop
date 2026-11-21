@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.8
+
+- **A resource added by hand is never shown as built in.** The "built in" badge belongs to the catalogue, but it was decided by the entry id: editing a built-in entry into another address kept its `builtin:` id, and an older build could leave a `builtIn` flag in `config.json`, so `https://2ip.io` appeared with the badge. Editing the address of a built-in entry now turns it into a plain user resource and hides the original default; a configuration written by an older build is repaired on start, so an existing entry loses the badge after the update.
+- **The idle client no longer spins the CPU or grows in memory.** The pulse animation on the tunnel card ran in a loop even while the tunnel was off, repainting the page sixty times a second, and every status tick rebuilt the whole window even when nothing had changed. The animation now runs only while the link is coming up or up and the page is on screen, and a status or list refresh that produced the same data no longer notifies the UI.
+- **About shows the source code of this client.** The **Source code** line opens `https://github.com/MrKsey/y-node-desktop`.
+
 ## 1.5.7
 
 - **The Results card is sorted by latency.** The list now shows the fastest answer first, in the same order "Add the best N" ranks it, so the peers the button keeps are the rows at the top of the card instead of one that was hidden below the fold.

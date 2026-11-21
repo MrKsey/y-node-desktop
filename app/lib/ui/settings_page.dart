@@ -488,9 +488,17 @@ class _SettingsPageState extends State<SettingsPage> {
                     ? '—'
                     : app.state.yggVersion,
               ),
-              const InfoRow(
+              InfoRow(
                 label: 'Source code',
                 value: 'github.com/MrKsey/y-node-desktop',
+                onTap: () async {
+                  final opened = await openExternalUrl(
+                    'https://github.com/MrKsey/y-node-desktop',
+                  );
+                  if (!opened && context.mounted) {
+                    showSnack(context, 'The browser did not open the link');
+                  }
+                },
               ),
               const InfoRow(label: 'License', value: 'MIT'),
             ],
