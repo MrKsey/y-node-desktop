@@ -1,4 +1,4 @@
-# Y-Node Desktop
+﻿# Y-Node Desktop
 
 [English](README.md) · **Русский**
 
@@ -243,15 +243,15 @@ docs/screenshots/     скриншоты для этого файла
 ### Windows (x64, портативный ZIP и установщик)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.6
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.7
 ```
 
 Результат:
 
 * `dist\windows\` — обычный набор файлов, работает без установки;
-* `dist\y-node-desktop-1.5.6-windows-x64.zip` — портативный архив с
+* `dist\y-node-desktop-1.5.7-windows-x64.zip` — портативный архив с
   `install-windows.ps1` и `uninstall-windows.ps1`;
-* `dist\y-node-desktop-1.5.6-x64-setup.exe` — установщик Inno Setup, собирается,
+* `dist\y-node-desktop-1.5.7-x64-setup.exe` — установщик Inno Setup, собирается,
   когда установлен Inno Setup (`winget install JRSoftware.InnoSetup`).
 
 Установщик ставит приложение в **Program Files** для всех пользователей и просит
@@ -266,24 +266,24 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.
 ### macOS
 
 ```bash
-./scripts/build-macos.sh 1.5.6
+./scripts/build-macos.sh 1.5.7
 ```
 
 Нужны Xcode command line tools и Flutter. Скрипт собирает ядро под архитектуру
 машины, встраивает его в `Contents/MacOS`, подписывает пакет ad hoc, пишет
 `dist/macos/Y-Node.app` и упаковывает тот же бандл в
-`dist/y-node-desktop-1.5.6-macos-<arch>.pkg` — установщик, который ставит
+`dist/y-node-desktop-1.5.7-macos-<arch>.pkg` — установщик, который ставит
 приложение в **Applications** для всех пользователей.
 
 ### Linux
 
 ```bash
-./scripts/build-linux.sh 1.5.6
+./scripts/build-linux.sh 1.5.7
 ```
 
 Нужны заголовки GTK 3 (`libgtk-3-dev`), `ninja-build`, `cmake`, `clang` и
 Flutter. Результат — `dist/linux/y-node-desktop/`, архив рядом с ним и, если
-доступен `dpkg-deb`, пакет `dist/y-node-desktop-1.5.6-linux-x64.deb`. Пакет
+доступен `dpkg-deb`, пакет `dist/y-node-desktop-1.5.7-linux-x64.deb`. Пакет
 ставит приложение в `/opt/y-node-desktop`, добавляет `/usr/bin/y-node-desktop`,
 пункт меню и иконку.
 

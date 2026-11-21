@@ -275,7 +275,11 @@ class _ResultsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final alive = app.probeResults.where((row) => row.up).toList();
+    // The card shows the rows in the same order the button ranks them: the
+    // fastest first. Otherwise the button could keep a peer that the list
+    // showed below the fold, which looked like it came from nowhere.
+    final alive = app.probeResults.where((row) => row.up).toList()
+      ..sort((a, b) => a.latencyMs.compareTo(b.latencyMs));
     final wanted = int.tryParse(app.config.peerCount.trim()) ?? 3;
     return SectionCard(
       title: 'Results',

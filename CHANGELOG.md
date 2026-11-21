@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.7
+
+- **The Results card is sorted by latency.** The list now shows the fastest answer first, in the same order "Add the best N" ranks it, so the peers the button keeps are the rows at the top of the card instead of one that was hidden below the fold.
+
 ## 1.5.6
 
 - **A second disconnect no longer leaves the client on the network.** Connect closed the stop channel of the previous session, and after a disconnect that channel was already closed: the second connect panicked inside the HTTP handler, the window showed "disconnected" while the node, the exit polling and the local proxy kept running, and the next connect answered "node is already running". Every session now owns a fresh stop channel, Disconnect clears it, and a stale node is released before a new one starts. The node is stopped before the status loop is awaited, so a stuck call cannot keep the client online.
