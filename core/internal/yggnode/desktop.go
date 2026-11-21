@@ -178,7 +178,8 @@ func (n *Node) ResolveHosts(ctx context.Context, host string) ([]net.IP, error) 
 
 	var found []net.IP
 	reason := ""
-	for _, qtype := range n.resolveOrder(name) {
+	order, strictFirst := n.resolveOrder(name)
+	for index, qtype := range order {
 		query := dnsQuery(desktopDNSTxID, name, qtype)
 		reply := router.handle(query)
 		var ips []net.IP
@@ -204,6 +205,13 @@ func (n *Node) ResolveHosts(ctx context.Context, host string) ([]net.IP, error) 
 				found = append(found, ip)
 			}
 		}
+		// Auto mode is IPv4 only when the name has an IPv4 address: a client
+		// must not move the traffic to IPv6 just because the exit reports a
+		// working IPv6 route. The AAAA query is asked only when the name has no
+		// A record at all.
+		if strictFirst && index == 0 && len(ips) > 0 {
+			break
+		}
 	}
 	if len(found) == 0 {
 		if reason != "" {
@@ -217,19 +225,18 @@ func (n *Node) ResolveHosts(ctx context.Context, host string) ([]net.IP, error) 
 // resolveOrder is the address family order of one name. Yggdrasil names have no
 // IPv4 form at all and are always asked for an AAAA record.
 //
-// Without an exit the machine keeps its own IPv6 path, so both families are
-// asked for. Through an exit the answer follows what the exit reported about
-// itself: an exit with a working IPv6 route gets the AAAA query first, which is
-// what makes the browser use IPv6 there, and an exit with IPv6 turned off or
-// broken gets IPv4 only. Until the first status poll answers, IPv4 stays first:
-// every exit carries IPv4, and an unknown exit must not stall every connection
-// on a family it may not route.
+// Auto mode always puts IPv4 first and never switches a name that has an IPv4
+// address to IPv6: the second result is true, which tells ResolveHosts to stop
+// after a successful A answer. IPv6 is asked only for a name without an A
+// record. The exit's own IPv6 capability does not change that order; it only
+// decides whether IPv6 destinations are forwarded at all.
 //
 // The "prefer" mode of the local configuration is the explicit opt-in for the
-// opposite order, and "off" drops IPv6 entirely.
-func (n *Node) resolveOrder(name string) []uint16 {
+// opposite order: AAAA first, then A, and both families are used. "Off" drops
+// IPv6 entirely.
+func (n *Node) resolveOrder(name string) ([]uint16, bool) {
 	if isYggName(name) {
-		return []uint16{dnsTypeAAAA}
+		return []uint16{dnsTypeAAAA}, false
 	}
 	mode := "auto"
 	n.mu.Lock()
@@ -240,19 +247,11 @@ func (n *Node) resolveOrder(name string) []uint16 {
 	}
 	switch mode {
 	case "off":
-		return []uint16{dnsTypeA}
+		return []uint16{dnsTypeA}, false
 	case "prefer":
-		return []uint16{dnsTypeAAAA, dnsTypeA}
+		return []uint16{dnsTypeAAAA, dnsTypeA}, false
 	}
-	if manager != nil && manager.enabled() {
-		switch manager.ipv6Preference() {
-		case "prefer":
-			return []uint16{dnsTypeAAAA, dnsTypeA}
-		case "avoid":
-			return []uint16{dnsTypeA}
-		}
-	}
-	return []uint16{dnsTypeA, dnsTypeAAAA}
+	return []uint16{dnsTypeA, dnsTypeAAAA}, true
 }
 
 // DesktopExitEnabled reports whether the exit manager exists and is switched on.

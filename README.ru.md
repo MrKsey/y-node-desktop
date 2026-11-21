@@ -43,35 +43,36 @@ Y-Node Desktop повторяет модель Android-клиента: узел 
 `127.0.0.1:7890` и SOCKS5-прокси на `127.0.0.1:7891`, а операционная система
 или приложение отправляют трафик в них.
 
-```text
-Режим прокси: через Yggdrasil идут только программы, использующие прокси
-
-┌────────────────────┐      ┌──────────────────────────────┐      ┌──────────────────────┐
-│ браузер, Telegram  │      │ Y-Node Desktop (ядро)        │      │   Сеть Yggdrasil     │
-│ другие приложения  │ ───► │ HTTP 127.0.0.1:7890          │ ───► │ сайты и сервисы .ygg │
-│                    │ ◄─── │ SOCKS5 127.0.0.1:7891        │ ◄─── │ адреса 200::/7       │
-└────────────────────┘      │ узел Yggdrasil               │      └──────────────────────┘
-                            └──────────────────────────────┘
-
-Обычный Интернет, через exit-узел
-
-┌────────────────────┐      ┌──────────────────────────────┐      ┌────────────────────┐      ┌───────────┐
-│ браузер, Telegram  │      │ Y-Node Desktop (ядро)        │      │ X-Node (Exit Node) │      │ Интернет  │
-│ другие приложения  │ ───► │ локальный прокси → узел      │ ───► │ SOCKS5             │ ───► │ сайты     │
-│                    │ ◄─── │                              │ ◄─── │ квоты, allowlist   │ ◄─── │ и сервисы │
-└────────────────────┘      └──────────────────────────────┘      └────────────────────┘      └───────────┘
+```mermaid
+flowchart LR
+    A["Браузер, Telegram,<br/>другие приложения"] -->|"HTTP 127.0.0.1:7890<br/>SOCKS5 127.0.0.1:7891"| B["Ядро Y-Node Desktop<br/>узел Yggdrasil"]
+    B --> C["Сеть Yggdrasil<br/>сайты и сервисы<br/>200::/7"]
 ```
 
-Без exit-узла приложение даёт доступ только к ресурсам Yggdrasil. С exit-узлом
-трафик идёт по сети Yggdrasil до X-Node и уже оттуда выходит в Интернет.
+**Режим прокси:** через Yggdrasil идут только программы, использующие прокси.
+
+```mermaid
+flowchart LR
+    A["Браузер, Telegram,<br/>другие приложения"] --> B["Ядро Y-Node Desktop<br/>локальный прокси → узел Yggdrasil"]
+    B --> C["X-Node (exit-узел)<br/>SOCKS5, квоты, allowlist"]
+    C --> D["Интернет<br/>сайты и сервисы"]
+```
+
+**Через exit-узел:** трафик идёт по сети Yggdrasil до X-Node и уже оттуда
+выходит в Интернет.
+
+Без exit-узла приложение даёт доступ только к ресурсам Yggdrasil.
 
 <p align="center">
-  <img src="docs/screenshots/desk-1.png" width="752" alt="Y-Node Desktop, экран туннеля">&nbsp;&nbsp;&nbsp;
-  <img src="docs/screenshots/desk-2.png" width="752" alt="Y-Node Desktop, экран пиров">
+  <img src="docs/screenshots/desk-1.png" width="716" alt="Y-Node Desktop, экран туннеля">
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/desk-3.png" width="752" alt="Y-Node Desktop, экран exit-узла">
+  <img src="docs/screenshots/desk-2.png" width="722" alt="Y-Node Desktop, экран пиров">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/desk-3.png" width="721" alt="Y-Node Desktop, экран exit-узла">
 </p>
 
 ## Основные возможности
@@ -88,10 +89,11 @@ Y-Node Desktop повторяет модель Android-клиента: узел 
   добавление профиля по адресу. Для профилей есть автоматический failover;
   карточка показывает состояние, задержку, соединения, UDP-ассоциации,
   опубликованный резолвер, состояние IPv6 и квоту трафика.
-- **Выход по IPv4 и IPv6.** В режиме **Auto** имя сначала разрешается в IPv4, а
-  IPv6 используется только когда exit сообщает о рабочем IPv6-маршруте.
-  **Prefer** ставит IPv6 первым с откатом на IPv4, **Off** использует только
-  IPv4. Карточка объясняет, когда у exit нет рабочего IPv6.
+- **Выход по IPv4 и IPv6.** В режиме **Auto** имя разрешается в IPv4, и если у
+  имени есть IPv4-адрес, клиент никогда не переключает его на IPv6: запрос AAAA
+  делается только для имени без A-записи. **Prefer** ставит IPv6 первым с
+  откатом на IPv4, **Off** использует только IPv4. Карточка объясняет, когда у
+  exit нет рабочего IPv6.
 - **UDP и QUIC.** UDP-трафик, включая DNS и приложения на QUIC, также идёт
   через exit-узел.
 - **DNS.** Разрешение внутренних имён `.ygg`; для обычных доменов можно
@@ -138,11 +140,16 @@ Y-Node Desktop повторяет модель Android-клиента: узел 
 тестировались**. Они публикуются для удобства: используйте их на свой риск и
 сообщайте о проблемах в трекере.
 
-- **macOS:** `y-node-desktop-<version>-macos-x64.zip` (Intel) и
-  `y-node-desktop-<version>-macos-arm64.zip` (Apple silicon). Пакет подписан
-  ad hoc, поэтому Gatekeeper может потребовать **Открыть** из контекстного меню.
-- **Linux:** `y-node-desktop-<version>-linux-x64.tar.gz`. Нужны GTK 3 и обычные
-  библиотеки времени выполнения Flutter; распакуйте архив и запустите
+- **macOS:** `y-node-desktop-<version>-macos-x64.pkg` (Intel) и
+  `y-node-desktop-<version>-macos-arm64.pkg` (Apple silicon) ставят приложение в
+  **Applications** для всех пользователей. Портативные архивы
+  `y-node-desktop-<version>-macos-x64.zip` и `...-macos-arm64.zip` содержат тот
+  же `Y-Node.app`. Пакет подписан ad hoc, поэтому Gatekeeper может потребовать
+  **Открыть** из контекстного меню.
+- **Linux:** `y-node-desktop-<version>-linux-x64.deb` ставит приложение в
+  `/opt/y-node-desktop`, добавляет пункт меню и иконку (Debian и Ubuntu).
+  Портативный `y-node-desktop-<version>-linux-x64.tar.gz` требует GTK 3 и
+  обычные библиотеки времени выполнения Flutter; распакуйте архив и запустите
   `y-node-desktop/y-node-desktop`.
 
 Для доступа только к внутренним ресурсам Yggdrasil достаточно настроить
@@ -151,14 +158,9 @@ Y-Node Desktop повторяет модель Android-клиента: узел 
 
 ## Как это работает
 
-```
-┌──────────────────────────────┐        ┌──────────────────────────────┐
-│ Окно Flutter                 │  HTTP  │ y-node-core (Go)             │
-│  Tunnel / Peers / Services / │ ─────▶ │  узел Yggdrasil              │
-│  Exit / Proxy / Logs /       │  JSON  │  HTTP-прокси 127.0.0.1:7890  │
-│  Settings                    │        │  SOCKS5      127.0.0.1:7891  │
-└──────────────────────────────┘        │  системный прокси (WinINET)  │
-                                        └──────────────────────────────┘
+```mermaid
+flowchart LR
+    W["Окно Flutter<br/>Tunnel / Peers / Services /<br/>Exit / Proxy / Logs / Settings"] <-->|"HTTP JSON<br/>127.0.0.1:7799"| C["y-node-core (Go)<br/>узел Yggdrasil<br/>HTTP-прокси 127.0.0.1:7890<br/>SOCKS5 127.0.0.1:7891<br/>системный прокси"]
 ```
 
 Окно — тонкий клиент. Ядро владеет узлом, прокси, конфигурацией и настройкой
@@ -233,26 +235,6 @@ scripts/              сценарии сборки, скрипт Inno Setup, у
 docs/screenshots/     скриншоты для этого файла
 ```
 
-API ядра слушает `127.0.0.1:7799`:
-
-| Метод | Путь | Назначение |
-| --- | --- | --- |
-| GET | `/v1/health` | проверка готовности |
-| GET | `/v1/state` | счётчики, адрес, порты прокси, состояние exit |
-| POST | `/v1/connect`, `/v1/disconnect` | запуск и остановка туннеля |
-| POST | `/v1/system-proxy` | `{"enabled": true}` |
-| GET/PUT | `/v1/config` | чтение и запись конфигурации |
-| GET/POST/DELETE | `/v1/peers` | список пиров |
-| POST | `/v1/peers/settings` | число автоматических пиров и замена |
-| POST | `/v1/peers/auto` | скачать публичный список и выбрать живые узлы |
-| POST | `/v1/peers/probe` | задержка заданных пиров |
-| GET/POST/DELETE | `/v1/exit` | профили exit-узлов |
-| POST | `/v1/exit/link` | добавить ссылку `yggnode://exit` от X-Node |
-| POST | `/v1/exit/check` | попросить exit-узел разрешить имя |
-| POST | `/v1/dns/check` | проверить список DNS-серверов |
-| GET/POST/DELETE | `/v1/services` | записи страницы Services |
-| GET | `/v1/logs` | журнал в памяти |
-
 ## Сборка из исходников
 
 Репозиторий держит две половины независимыми: ядро собирается без Flutter, а
@@ -261,15 +243,15 @@ API ядра слушает `127.0.0.1:7799`:
 ### Windows (x64, портативный ZIP и установщик)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.5
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.6
 ```
 
 Результат:
 
 * `dist\windows\` — обычный набор файлов, работает без установки;
-* `dist\y-node-desktop-1.5.5-windows-x64.zip` — портативный архив с
+* `dist\y-node-desktop-1.5.6-windows-x64.zip` — портативный архив с
   `install-windows.ps1` и `uninstall-windows.ps1`;
-* `dist\y-node-desktop-1.5.5-x64-setup.exe` — установщик Inno Setup, собирается,
+* `dist\y-node-desktop-1.5.6-x64-setup.exe` — установщик Inno Setup, собирается,
   когда установлен Inno Setup (`winget install JRSoftware.InnoSetup`).
 
 Установщик ставит приложение в **Program Files** для всех пользователей и просит
@@ -277,24 +259,33 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.
 установки: `install-windows.ps1` сам запрашивает повышение прав и делает то же
 самое, `uninstall-windows.ps1` удаляет результат. Сертификат подписи не нужен.
 
+При обновлении поверх запущенной копии установщик сначала её останавливает:
+ядро получает команду завершиться, отключает туннель и восстанавливает
+системный прокси, и только после этого файлы заменяются.
+
 ### macOS
 
 ```bash
-./scripts/build-macos.sh 1.5.5
+./scripts/build-macos.sh 1.5.6
 ```
 
 Нужны Xcode command line tools и Flutter. Скрипт собирает ядро под архитектуру
-машины, встраивает его в `Contents/MacOS`, подписывает пакет ad hoc и пишет
-`dist/macos/Y-Node.app`.
+машины, встраивает его в `Contents/MacOS`, подписывает пакет ad hoc, пишет
+`dist/macos/Y-Node.app` и упаковывает тот же бандл в
+`dist/y-node-desktop-1.5.6-macos-<arch>.pkg` — установщик, который ставит
+приложение в **Applications** для всех пользователей.
 
 ### Linux
 
 ```bash
-./scripts/build-linux.sh 1.5.5
+./scripts/build-linux.sh 1.5.6
 ```
 
 Нужны заголовки GTK 3 (`libgtk-3-dev`), `ninja-build`, `cmake`, `clang` и
-Flutter. Результат — `dist/linux/y-node-desktop/` и архив рядом с ним.
+Flutter. Результат — `dist/linux/y-node-desktop/`, архив рядом с ним и, если
+доступен `dpkg-deb`, пакет `dist/y-node-desktop-1.5.6-linux-x64.deb`. Пакет
+ставит приложение в `/opt/y-node-desktop`, добавляет `/usr/bin/y-node-desktop`,
+пункт меню и иконку.
 
 ### Кросс-компиляция только ядра
 

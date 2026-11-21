@@ -141,10 +141,13 @@ begin
 end;
 
 { An update installs over the previous build, which may be running: it is
-  stopped before the files are copied. }
+  stopped before the files are copied. A core that answered /v1/quit restores
+  the system proxy itself; a core that had to be killed leaves it pointing at
+  a port that is already gone, so the loopback proxy is restored here as well. }
 function InitializeSetup(): Boolean;
 begin
   StopYNode;
+  RestoreSystemProxy;
   Result := True;
 end;
 

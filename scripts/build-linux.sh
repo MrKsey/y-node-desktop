@@ -4,7 +4,8 @@
 #   ./scripts/build-linux.sh [version]
 #
 # Produces dist/linux/y-node-desktop with the core binary next to the
-# application binary, and a tarball of the same directory.
+# application binary, a tarball of the same directory and, when dpkg-deb is
+# available, a .deb package that installs the app into /opt with a menu entry.
 set -euo pipefail
 
 version="${1:-1.0.0}"
@@ -57,4 +58,45 @@ rm -rf "$dist"
 mkdir -p "$dist"
 cp -R "$bundle" "$dist/y-node-desktop"
 tar -C "$dist" -czf "$root/dist/y-node-desktop-$version-linux-x64.tar.gz" y-node-desktop
+
+if ! command -v dpkg-deb >/dev/null 2>&1; then
+  echo "dpkg-deb is not available; skipping the .deb package"
+  echo "Done: $dist/y-node-desktop"
+  exit 0
+fi
+
+echo "==> building the .deb package"
+arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+case "$arch" in
+  amd64) artifact_arch="x64" ;;
+  arm64) artifact_arch="arm64" ;;
+  *) artifact_arch="$arch" ;;
+esac
+pkgroot="$root/dist/deb"
+rm -rf "$pkgroot"
+install -d "$pkgroot/DEBIAN" \
+  "$pkgroot/opt/y-node-desktop" \
+  "$pkgroot/usr/bin" \
+  "$pkgroot/usr/share/applications" \
+  "$pkgroot/usr/share/icons/hicolor/256x256/apps"
+cp -R "$dist/y-node-desktop/." "$pkgroot/opt/y-node-desktop/"
+ln -s /opt/y-node-desktop/y-node-desktop "$pkgroot/usr/bin/y-node-desktop"
+cp "$app/assets/tray_icon.png" "$pkgroot/usr/share/icons/hicolor/256x256/apps/y-node-desktop.png"
+cp "$bundle/y-node-desktop.desktop" "$pkgroot/usr/share/applications/y-node-desktop.desktop"
+cat > "$pkgroot/DEBIAN/control" <<EOF
+Package: y-node-desktop
+Version: $version
+Section: net
+Priority: optional
+Architecture: $arch
+Maintainer: Y-Node <mrksey@yandex.ru>
+Depends: libgtk-3-0, libblkid1, liblzma5
+Description: Yggdrasil network client with a local HTTP and SOCKS5 proxy
+ Y-Node Desktop runs a Yggdrasil node, exposes a local HTTP and SOCKS5 proxy
+ and can switch the system proxy to that port.
+EOF
+dpkg-deb --build --root-owner-group "$pkgroot" \
+  "$root/dist/y-node-desktop-$version-linux-$artifact_arch.deb"
+rm -rf "$pkgroot"
+
 echo "Done: $dist/y-node-desktop"

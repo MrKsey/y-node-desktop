@@ -6,7 +6,8 @@
 # The core is built for the architecture of the machine (arm64 or amd64) and
 # placed into Contents/MacOS next to the application binary, which is where the
 # window looks for it. The bundle is signed ad hoc, so it runs locally without
-# an Apple developer account.
+# an Apple developer account. Besides the .app in dist/macos, the script writes
+# a .pkg installer that puts the app into /Applications for every user.
 set -euo pipefail
 
 version="${1:-1.0.0}"
@@ -41,8 +42,29 @@ chmod +x "$bundle/Contents/MacOS/y-node-core"
 echo "==> signing (ad hoc)"
 codesign --force --deep --sign - "$bundle"
 
+case "$(uname -m)" in
+  x86_64) arch="x64" ;;
+  arm64) arch="arm64" ;;
+  *) arch="$(uname -m)" ;;
+esac
+
 dist="$root/dist/macos"
 rm -rf "$dist"
 mkdir -p "$dist"
 cp -R "$bundle" "$dist/"
+
+echo "==> building the .pkg installer"
+pkgroot="$root/dist/pkgroot"
+rm -rf "$pkgroot"
+mkdir -p "$pkgroot"
+cp -R "$bundle" "$pkgroot/"
+pkg="$root/dist/y-node-desktop-$version-macos-$arch.pkg"
+pkgbuild --root "$pkgroot" \
+  --identifier "com.y-node.desktop" \
+  --version "$version" \
+  --install-location "/Applications" \
+  "$pkg"
+rm -rf "$pkgroot"
+
 echo "Done: $dist/$(basename "$bundle")"
+echo "Done: $pkg"

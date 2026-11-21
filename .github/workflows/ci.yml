@@ -134,6 +134,8 @@ jobs:
             dist/*.zip
             dist/*.exe
             dist/*.tar.gz
+            dist/*.pkg
+            dist/*.deb
           if-no-files-found: error
 
   checksums:

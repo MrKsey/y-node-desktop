@@ -606,25 +606,43 @@ class AppState extends ChangeNotifier {
   }
 
   /// Keeps the configured number of links, replacing the slowest with a faster
-  /// answer. A link with no numbers at all counts as the worst.
+  /// answer. The rows are ranked by the latency the Results card shows, so the
+  /// three links the button promises are the three rows at the top of that
+  /// card. A link with no numbers at all is the worst, but a candidate added by
+  /// this very call already carries the latency of its probe row: without that
+  /// it looked infinitely slow and was replaced by the next row on every
+  /// iteration, which ended with a peer from the bottom of the list.
   Future<int> applyBestPeers() async {
-    final alive = _preferLocal(probeResults.where((row) => row.up).toList());
+    final alive = probeResults.where((row) => row.up).toList()
+      ..sort((a, b) => a.latencyMs.compareTo(b.latencyMs));
     if (alive.isEmpty) return 0;
     final wanted = _peerTarget;
     final active = <String>[...configuredPeers];
-    final latency = {for (final peer in peers) peer.uri: peer.latencyMs};
+    final latency = <String, double>{
+      for (final row in probeResults) row.uri: row.latencyMs,
+    };
+    for (final peer in peers) {
+      latency[peer.uri] = peer.latencyMs;
+    }
+    double qualityOf(String uri) {
+      final value = latency[uri];
+      if (value == null || value <= 0) return double.infinity;
+      return value;
+    }
+
     var changes = 0;
     for (final row in alive) {
       if (active.any((uri) => uriHost(uri) == uriHost(row.uri))) continue;
       if (active.length < wanted) {
         active.add(row.uri);
+        latency[row.uri] = row.latencyMs;
         changes++;
         continue;
       }
       var worst = -1;
       var worstValue = 0.0;
       for (var index = 0; index < active.length; index++) {
-        final value = latency[active[index]] ?? double.infinity;
+        final value = qualityOf(active[index]);
         if (value <= row.latencyMs) continue;
         if (worst < 0 || value > worstValue) {
           worst = index;
@@ -633,6 +651,7 @@ class AppState extends ChangeNotifier {
       }
       if (worst < 0) continue;
       active[worst] = row.uri;
+      latency[row.uri] = row.latencyMs;
       changes++;
     }
     final activeHosts = {for (final uri in active) uriHost(uri)};

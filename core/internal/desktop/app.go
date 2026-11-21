@@ -89,6 +89,12 @@ type App struct {
 	// session. A rename made while the tunnel was down is sent again as soon as
 	// the exit answers.
 	labelSynced bool
+	// registrationSynced records that this session has already told the exit
+	// the device name and the app version. The server keeps those fields from
+	// the last registration, so every connect refreshes them once: without it
+	// the Clients page of X-Node kept showing the version the client had on the
+	// day it redeemed its invite.
+	registrationSynced bool
 
 	// Peer supervisor state: when a configured peer was first seen down, the
 	// cached public candidates and the last check.
@@ -283,6 +289,14 @@ func (a *App) Connect() error {
 	cfg := a.cfg
 	a.mu.Unlock()
 
+	if a.node.IsRunning() {
+		// A disconnect that failed in an older build could leave the node up.
+		// Starting a second node is impossible, so the stale one is released
+		// before a new session begins.
+		a.logs.Warnf("connect: a previous node was still running, stopping it first")
+		a.node.Stop()
+	}
+
 	if len(cfg.peerList()) == 0 {
 		return errors.New("no peers configured: add a peer or press Auto")
 	}
@@ -324,6 +338,7 @@ func (a *App) Connect() error {
 	a.exitDNS = ""
 	a.exitStat = ""
 	a.labelSynced = false
+	a.registrationSynced = false
 	systemProxy := a.cfg.SystemProxy
 	if a.sessionCancel != nil {
 		a.sessionCancel()
@@ -331,6 +346,15 @@ func (a *App) Connect() error {
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	a.sessionCtx = sessionCtx
 	a.sessionCancel = sessionCancel
+	// A session owns its own stop channel. Disconnect closes the channel of the
+	// session it stopped and clears the field, so a later Connect must create a
+	// fresh one instead of closing an already closed channel. That second close
+	// panicked the HTTP handler, which left the node and the proxy running while
+	// the window already showed "disconnected".
+	a.done = make(chan struct{})
+	a.refreshDone = make(chan struct{})
+	done := a.done
+	refreshDone := a.refreshDone
 	a.mu.Unlock()
 
 	if systemProxy {
@@ -339,10 +363,7 @@ func (a *App) Connect() error {
 		}
 	}
 
-	close(a.done)
-	a.done = make(chan struct{})
-	a.refreshDone = make(chan struct{})
-	go a.refreshLoop(sessionCtx, a.done, a.refreshDone)
+	go a.refreshLoop(sessionCtx, done, refreshDone)
 	// A link imported while the tunnel was down carries an unused invite.
 	// Redeem it in the background so Connect answers quickly, and ask the exit
 	// about itself right away: the first status answer is what tells the proxy
@@ -372,25 +393,32 @@ func (a *App) Connect() error {
 // Disconnect stops the proxy and the node.
 func (a *App) Disconnect() error {
 	a.mu.Lock()
-	if !a.running {
-		cfg := a.cfg
-		a.mu.Unlock()
-		// A tunnel that is already down can still leave the system proxy on: an
-		// earlier core may have been killed before it restored the setting. The
-		// quit path calls this, so only our own address is cleared here.
-		recoverSystemProxy(cfg.Bind, cfg.HTTPPort)
-		return nil
-	}
+	running := a.running
 	proxy := a.proxy
 	wasSystemProxy := a.sysProxySet
-	a.running = false
-	a.proxy = nil
 	done := a.done
 	refreshDone := a.refreshDone
 	cancel := a.sessionCancel
+	cfg := a.cfg
+	a.running = false
+	a.proxy = nil
+	a.done = nil
+	a.refreshDone = nil
 	a.sessionCtx = nil
 	a.sessionCancel = nil
 	a.mu.Unlock()
+
+	// A tunnel that is already down can still leave the system proxy on or a
+	// node running: an older build could panic in the middle of Disconnect and
+	// leave both behind. The quit path calls this, so the leftovers are cleaned
+	// up even when the window believes the tunnel is already off.
+	if !running && proxy == nil && !a.node.IsRunning() {
+		recoverSystemProxy(cfg.Bind, cfg.HTTPPort)
+		a.mu.Lock()
+		a.sysProxySet = false
+		a.mu.Unlock()
+		return nil
+	}
 
 	// Cancel first: the health ticker may be inside CheckExitProfiles and the
 	// peer supervisor may be probing candidates. Both have to stop before the
@@ -399,23 +427,38 @@ func (a *App) Disconnect() error {
 	if cancel != nil {
 		cancel()
 	}
-	close(done)
-	if refreshDone != nil {
-		<-refreshDone
+	if done != nil {
+		close(done)
 	}
 	if wasSystemProxy {
 		if err := setSystemProxy(false, "", 0); err != nil {
 			a.logs.Warnf("system proxy: %v", err)
 		}
+	} else {
+		// Only our own loopback address is cleared, so a corporate proxy the
+		// user configured stays untouched.
+		recoverSystemProxy(cfg.Bind, cfg.HTTPPort)
 	}
 	if proxy != nil {
 		proxy.Stop()
 	}
 	a.node.Stop()
+	// The node is down before the wait, so a status loop that is stuck in a
+	// network call cannot keep the client on the Yggdrasil network. The wait is
+	// bounded for the same reason: the disconnect itself must always finish.
+	if refreshDone != nil {
+		select {
+		case <-refreshDone:
+		case <-time.After(5 * time.Second):
+			a.logs.Warnf("disconnect: the status loop did not stop in time")
+		}
+	}
 	a.mu.Lock()
 	a.sysProxySet = false
 	a.mu.Unlock()
-	a.logs.Infof("disconnected")
+	if running {
+		a.logs.Infof("disconnected")
+	}
 	return nil
 }
 
@@ -934,6 +977,7 @@ func (a *App) registerExit(profileID, invite string) {
 			a.cfg.ExitProfiles[index].DNSPort = payload.DNSPort
 		}
 	}
+	a.registrationSynced = true
 	cfg := a.cfg
 	name := profileID
 	for _, profile := range cfg.ExitProfiles {
@@ -946,22 +990,38 @@ func (a *App) registerExit(profileID, invite string) {
 	a.logs.Infof("registered with exit %s", name)
 }
 
-// ensureExitRegistration redeems the stored invite of the active profile when
-// the tunnel is up and the profile has not been registered yet. It is called
-// after connect, before a check and from the health loop, so a link imported
-// while the node was down becomes usable without the user pressing anything.
+// ensureExitRegistration redeems the stored invite of the active profile and
+// refreshes the device name and the app version of an already registered one.
+// It is called after connect, before a check and from the health loop, so a
+// link imported while the node was down becomes usable without the user
+// pressing anything. A registered client registers with an empty invite: the
+// server accepts that for an allowlisted address and updates the fields the
+// Clients page shows, which is how the reported version stops being the one
+// from the first invite.
 func (a *App) ensureExitRegistration() {
 	a.mu.Lock()
 	running := a.running
 	profile, ok := a.cfg.activeProfile()
-	if !running || !ok || profile.Registered || strings.TrimSpace(profile.Token) != "" ||
-		strings.TrimSpace(profile.Invite) == "" ||
-		time.Since(a.lastRegisterAttempt) < 90*time.Second {
+	enabled := a.cfg.ExitEnabled
+	synced := a.registrationSynced
+	if !running || !ok || !enabled || synced {
+		a.mu.Unlock()
+		return
+	}
+	invite := strings.TrimSpace(profile.Invite)
+	registered := profile.Registered || strings.TrimSpace(profile.Token) != ""
+	// An unknown client needs the invite; a registered one only refreshes its
+	// fields and must not depend on the invite still being unused.
+	if invite == "" && !registered {
+		a.mu.Unlock()
+		return
+	}
+	if time.Since(a.lastRegisterAttempt) < 90*time.Second {
 		a.mu.Unlock()
 		return
 	}
 	a.mu.Unlock()
-	a.registerExit(profile.ID, profile.Invite)
+	a.registerExit(profile.ID, invite)
 }
 
 // exitProfile returns one profile by id after the registration may have changed

@@ -239,10 +239,11 @@ func TestExitCarriesIPv6FollowsTheActiveProfile(t *testing.T) {
 }
 
 // The desktop proxy resolves names itself, so the browser cannot apply its own
-// Happy Eyeballs rule: the family order has to follow what the exit reported.
-// An exit with a working IPv6 path gets the AAAA query first, an exit with IPv6
-// off gets IPv4 only, and an exit that has not answered yet keeps IPv4 first.
-func TestResolveOrderFollowsTheExit(t *testing.T) {
+// Happy Eyeballs rule. Auto mode must keep IPv4 first and must never move a
+// name that has an A record to IPv6, whatever the exit reports about itself:
+// the second result tells ResolveHosts to stop after a successful A answer.
+// Prefer is the explicit opt-in for the opposite order, off drops IPv6.
+func TestResolveOrderKeepsIPv4FirstInAuto(t *testing.T) {
 	manager, err := newExitManager(`{"enabled":true,"profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}]}`, nil, nil, &goLogger{})
 	if err != nil {
 		t.Fatal(err)
@@ -250,32 +251,46 @@ func TestResolveOrderFollowsTheExit(t *testing.T) {
 	node := NewNode()
 	node.exit = manager
 
-	order := node.resolveOrder("example.com")
-	if len(order) != 2 || order[0] != dnsTypeA {
-		t.Fatalf("an unpolled exit order = %v, want A first", order)
+	order, strict := node.resolveOrder("example.com")
+	if len(order) != 2 || order[0] != dnsTypeA || order[1] != dnsTypeAAAA || !strict {
+		t.Fatalf("an unpolled exit order = %v (strict %v), want A first", order, strict)
 	}
 	manager.markCapabilities("200::1:1080", &exitAPICapabilities{IPv6: true, IPv6State: "ok"})
-	order = node.resolveOrder("example.com")
-	if len(order) != 2 || order[0] != dnsTypeAAAA {
-		t.Fatalf("an IPv6 exit order = %v, want AAAA first", order)
-	}
-	manager.markCapabilities("200::1:1080", &exitAPICapabilities{IPv6: false, IPv6State: "off"})
-	order = node.resolveOrder("example.com")
-	if len(order) != 1 || order[0] != dnsTypeA {
-		t.Fatalf("an IPv4-only exit order = %v, want A only", order)
+	order, strict = node.resolveOrder("example.com")
+	if len(order) != 2 || order[0] != dnsTypeA || !strict {
+		t.Fatalf("an IPv6 exit order = %v (strict %v), want A first", order, strict)
 	}
 
-	// Without an exit the machine keeps its own IPv6 path, so both families
-	// are still asked for.
+	prefer, err := newExitManager(`{"enabled":true,"ipv6":"prefer","profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}]}`, nil, nil, &goLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.exit = prefer
+	order, strict = node.resolveOrder("example.com")
+	if len(order) != 2 || order[0] != dnsTypeAAAA || strict {
+		t.Fatalf("a prefer order = %v (strict %v), want AAAA first", order, strict)
+	}
+	off, err := newExitManager(`{"enabled":true,"ipv6":"off","profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}]}`, nil, nil, &goLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.exit = off
+	order, _ = node.resolveOrder("example.com")
+	if len(order) != 1 || order[0] != dnsTypeA {
+		t.Fatalf("an off order = %v, want A only", order)
+	}
+
+	// Without an exit auto keeps the same order: IPv4 first, IPv6 only for a
+	// name that has no A record.
 	disabled, err := newExitManager(`{"enabled":false,"profiles":[{"address":"200::1","socksPort":1080,"apiPort":1081}]}`, nil, nil, &goLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	direct := NewNode()
 	direct.exit = disabled
-	order = direct.resolveOrder("example.com")
-	if len(order) != 2 || order[0] != dnsTypeA || order[1] != dnsTypeAAAA {
-		t.Fatalf("a direct order = %v, want A and AAAA", order)
+	order, strict = direct.resolveOrder("example.com")
+	if len(order) != 2 || order[0] != dnsTypeA || order[1] != dnsTypeAAAA || !strict {
+		t.Fatalf("a direct order = %v (strict %v), want A first", order, strict)
 	}
 }
 

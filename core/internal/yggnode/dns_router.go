@@ -165,24 +165,18 @@ func isYggName(name string) bool {
 // the same list can hold both kinds.
 func (r *dnsRouter) resolveCustom(ctx context.Context, query []byte) []byte {
 	cfg := r.exit.config()
-	for _, server := range cfg.YggDNS {
-		var response []byte
-		var err error
+	stageCtx, cancel := context.WithTimeout(ctx, dnsStageTimeout)
+	response := raceResolvers(stageCtx, cfg.YggDNS, query, func(ctx context.Context, server string, query []byte) ([]byte, error) {
 		if host, _, splitErr := net.SplitHostPort(dnsEndpoint(server)); splitErr == nil {
 			if ip := net.ParseIP(host); ip != nil && yggRange.Contains(ip) {
-				response, err = r.queryInner(ctx, server, query)
-			} else {
-				response, err = r.queryDirect(ctx, server, query)
+				return r.queryInner(ctx, server, query)
 			}
 		}
-		if err == nil && dnsUsable(response) {
-			return response
-		}
-		if err != nil {
-			r.log.emit("debug", "dns: custom resolver %s: %v", server, err)
-		} else if len(response) > 0 {
-			r.log.emit("debug", "dns: custom resolver %s answered %s", server, dnsRcodeText(response))
-		}
+		return r.queryDirect(ctx, server, query)
+	}, r.log, "custom")
+	cancel()
+	if dnsUsable(response) {
+		return response
 	}
 	return r.resolveSystem(ctx, query)
 }
@@ -192,18 +186,9 @@ func (r *dnsRouter) resolveYgg(ctx context.Context, query []byte) []byte {
 	if r.inner == nil {
 		return nil
 	}
-	for _, server := range cfg.YggDNS {
-		response, err := r.queryInner(ctx, server, query)
-		if err == nil && dnsUsable(response) {
-			return response
-		}
-		if err != nil {
-			r.log.emit("debug", "dns: ygg resolver %s: %v", server, err)
-		} else if len(response) > 0 {
-			r.log.emit("debug", "dns: ygg resolver %s answered %s", server, dnsRcodeText(response))
-		}
-	}
-	return nil
+	stageCtx, cancel := context.WithTimeout(ctx, dnsStageTimeout)
+	defer cancel()
+	return raceResolvers(stageCtx, cfg.YggDNS, query, r.queryInner, r.log, "ygg")
 }
 
 func (r *dnsRouter) resolveLocal(ctx context.Context, query []byte) []byte {
@@ -211,18 +196,9 @@ func (r *dnsRouter) resolveLocal(ctx context.Context, query []byte) []byte {
 	if len(cfg.SystemDNS) == 0 {
 		return nil
 	}
-	for _, server := range cfg.SystemDNS {
-		response, err := r.queryDirect(ctx, server, query)
-		if err == nil && dnsUsable(response) {
-			return response
-		}
-		if err != nil {
-			r.log.emit("debug", "dns: local resolver %s: %v", server, err)
-		} else if len(response) > 0 {
-			r.log.emit("debug", "dns: local resolver %s answered %s", server, dnsRcodeText(response))
-		}
-	}
-	return nil
+	stageCtx, cancel := context.WithTimeout(ctx, dnsStageTimeout)
+	defer cancel()
+	return raceResolvers(stageCtx, cfg.SystemDNS, query, r.queryDirect, r.log, "local")
 }
 
 // resolveOrdinary resolves a public name. The second result says whether the
@@ -242,19 +218,14 @@ func (r *dnsRouter) resolveOrdinary(ctx context.Context, query []byte) ([]byte, 
 	// hide the answer of the next one, and it must never be cached.
 	var errorAnswer []byte
 	if exitPath {
-		for _, server := range cfg.DNS {
-			response, err := r.queryExit(ctx, server, query)
-			if err != nil {
-				r.log.emit("debug", "dns: exit resolver %s: %v", server, err)
-				continue
-			}
-			if dnsUsable(response) {
-				return response, true
-			}
-			if len(response) > 0 {
-				r.log.emit("debug", "dns: exit resolver %s answered %s", server, dnsRcodeText(response))
-				errorAnswer = response
-			}
+		exitCtx, exitCancel := context.WithTimeout(ctx, dnsStageTimeout)
+		response := raceResolvers(exitCtx, cfg.DNS, query, r.queryExit, r.log, "exit")
+		exitCancel()
+		if dnsUsable(response) {
+			return response, true
+		}
+		if len(response) > 0 {
+			errorAnswer = response
 		}
 		if !cfg.FallbackDirect {
 			return errorAnswer, false
@@ -268,19 +239,14 @@ func (r *dnsRouter) resolveOrdinary(ctx context.Context, query []byte) ([]byte, 
 	// of whatever resolver the provider runs on port 53. That answer was then
 	// logged as "direct resolver answered name does not exist", which looks like
 	// a broken exit DNS while the exit was simply down.
-	for _, server := range cfg.SystemDNS {
-		response, err := r.queryDirect(ctx, server, query)
-		if err != nil {
-			r.log.emit("debug", "dns: direct resolver %s: %v", server, err)
-			continue
-		}
-		if dnsUsable(response) {
-			return response, !exitPath
-		}
-		if len(response) > 0 {
-			r.log.emit("debug", "dns: direct resolver %s answered %s", server, dnsRcodeText(response))
-			errorAnswer = response
-		}
+	directCtx, directCancel := context.WithTimeout(ctx, dnsStageTimeout)
+	response := raceResolvers(directCtx, cfg.SystemDNS, query, r.queryDirect, r.log, "direct")
+	directCancel()
+	if dnsUsable(response) {
+		return response, !exitPath
+	}
+	if len(response) > 0 {
+		errorAnswer = response
 	}
 	// The configured resolvers may be blocked by the local network (a router
 	// that hijacks port 53, a hotel Wi-Fi). The operating system already knows
@@ -289,6 +255,66 @@ func (r *dnsRouter) resolveOrdinary(ctx context.Context, query []byte) ([]byte, 
 		return response, !exitPath
 	}
 	return errorAnswer, false
+}
+
+// dnsStageTimeout bounds one group of resolvers. The groups are tried in turn
+// (the exit, then the local network, then the system resolver), so a dead
+// server in one group must not eat the budget of the next one. Resolvers inside
+// a group are asked in parallel: the first usable answer wins, and a resolver
+// that is down no longer delays every name by its timeout.
+const dnsStageTimeout = 3 * time.Second
+
+// resolverResult is one answer of the parallel race.
+type resolverResult struct {
+	server   string
+	response []byte
+	err      error
+}
+
+// raceResolvers asks every server of one group at once and returns the first
+// usable answer. An error answer is kept as a fallback for the caller: a
+// SERVFAIL from every server is still more useful than a synthetic timeout.
+func raceResolvers(
+	ctx context.Context,
+	servers []string,
+	query []byte,
+	lookup func(context.Context, string, []byte) ([]byte, error),
+	log *goLogger,
+	kind string,
+) []byte {
+	if len(servers) == 0 {
+		return nil
+	}
+	raceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan resolverResult, len(servers))
+	for _, server := range servers {
+		server := server
+		go func() {
+			response, err := lookup(raceCtx, server, query)
+			results <- resolverResult{server: server, response: response, err: err}
+		}()
+	}
+	var errorAnswer []byte
+	for range servers {
+		select {
+		case <-ctx.Done():
+			return errorAnswer
+		case result := <-results:
+			switch {
+			case result.err != nil:
+				log.emit("debug", "dns: %s resolver %s: %v", kind, result.server, result.err)
+			case dnsUsable(result.response):
+				return result.response
+			case len(result.response) > 0:
+				log.emit("debug", "dns: %s resolver %s answered %s", kind, result.server, dnsRcodeText(result.response))
+				if errorAnswer == nil {
+					errorAnswer = result.response
+				}
+			}
+		}
+	}
+	return errorAnswer
 }
 
 // dnsRcodeText names a response code for the log. The log is the only place a

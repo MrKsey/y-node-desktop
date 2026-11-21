@@ -454,32 +454,6 @@ func (m *exitManager) carriesIPv6() bool {
 	return m.ipv6Path.Load()
 }
 
-// ipv6Preference answers how the proxy should order the address families of a
-// name for the active exit: "prefer" when the exit reported a working IPv6
-// path, "avoid" when it reported none, and "" when the exit has not answered
-// yet or no exit is in use. The desktop proxy resolves names itself, so the
-// browser cannot apply its own Happy Eyeballs rule; this is what makes an exit
-// with IPv6 turned on serve IPv6 to the browser.
-func (m *exitManager) ipv6Preference() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if !m.cfg.Enabled || len(m.cfg.Profiles) == 0 {
-		return ""
-	}
-	profile, ok := m.activeProfileLocked()
-	if !ok {
-		return ""
-	}
-	health := m.health[profile.ID]
-	if health == nil || health.IPv6Available == nil {
-		return ""
-	}
-	if *health.IPv6Available {
-		return "prefer"
-	}
-	return "avoid"
-}
-
 // markCapabilities stores what the exit said about itself: the IPv6 path and
 // the DNS resolver it publishes for its clients. UDP support is discovered on
 // the data path, where a refusal is immediate and specific.

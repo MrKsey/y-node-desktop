@@ -41,36 +41,36 @@ data path. A desktop has no VPN interface, so the core runs a local HTTP proxy
 on `127.0.0.1:7890` and a SOCKS5 proxy on `127.0.0.1:7891`, and the operating
 system or an application sends traffic to them.
 
-```text
-Proxy mode: only the applications that use the proxy go through Yggdrasil
-
-┌───────────────────┐      ┌──────────────────────────────┐      ┌─────────────────────────┐
-│ browser, Telegram │      │ Y-Node Desktop (core)        │      │    Yggdrasil network    │
-│ other apps        │ ───► │ HTTP 127.0.0.1:7890          │ ───► │ sites and services .ygg │
-│                   │ ◄─── │ SOCKS5 127.0.0.1:7891        │ ◄─── │ addresses 200::/7       │
-└───────────────────┘      │ Yggdrasil node               │      └─────────────────────────┘
-                           └──────────────────────────────┘
-
-Regular Internet, through an exit node
-
-┌───────────────────┐      ┌──────────────────────────────┐      ┌────────────────────┐      ┌──────────────┐
-│ browser, Telegram │      │ Y-Node Desktop (core)        │      │ X-Node (Exit Node) │      │   Internet   │
-│ other apps        │ ───► │ local proxy → Yggdrasil node │ ───► │ SOCKS5             │ ───► │ sites        │
-│                   │ ◄─── │                              │ ◄─── │ quotas, allowlist  │ ◄─── │ and services │
-└───────────────────┘      └──────────────────────────────┘      └────────────────────┘      └──────────────┘
+```mermaid
+flowchart LR
+    A["Browser, Telegram,<br/>other apps"] -->|"HTTP 127.0.0.1:7890<br/>SOCKS5 127.0.0.1:7891"| B["Y-Node Desktop core<br/>Yggdrasil node"]
+    B --> C["Yggdrasil network<br/>sites and services<br/>200::/7"]
 ```
 
-Without an exit node the app only gives access to Yggdrasil resources. With an
-exit node, traffic travels over Yggdrasil to X-Node and leaves for the Internet
-from there.
+**Proxy mode:** only the applications that use the proxy go through Yggdrasil.
+
+```mermaid
+flowchart LR
+    A["Browser, Telegram,<br/>other apps"] --> B["Y-Node Desktop core<br/>local proxy → Yggdrasil node"]
+    B --> C["X-Node exit node<br/>SOCKS5, quotas, allowlist"]
+    C --> D["Internet<br/>sites and services"]
+```
+
+**Through an exit node:** traffic travels over Yggdrasil to X-Node and leaves for
+the Internet from there.
+
+Without an exit node the app only gives access to Yggdrasil resources.
 
 <p align="center">
-  <img src="docs/screenshots/desk-1.png" width="752" alt="Y-Node Desktop, tunnel screen">&nbsp;&nbsp;&nbsp;
-  <img src="docs/screenshots/desk-2.png" width="752" alt="Y-Node Desktop, peers screen">
+  <img src="docs/screenshots/desk-1.png" width="716" alt="Y-Node Desktop, tunnel screen">
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/desk-3.png" width="752" alt="Y-Node Desktop, exit node screen">
+  <img src="docs/screenshots/desk-2.png" width="722" alt="Y-Node Desktop, peers screen">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/desk-3.png" width="721" alt="Y-Node Desktop, exit node screen">
 </p>
 
 ## Key features
@@ -89,7 +89,8 @@ from there.
   state, latency, connections, UDP associations, the published resolver, the
   IPv6 state and the traffic quota.
 - **IPv4 and IPv6 egress.** With the IPv6 mode on **Auto**, a name is resolved
-  to IPv4 first and to IPv6 only when the exit reports a working IPv6 path.
+  to IPv4 and, when the name has an IPv4 address, the client never switches it
+  to IPv6: the AAAA query is asked only for a name without an A record.
   **Prefer** puts IPv6 first and falls back to IPv4; **Off** uses IPv4 only.
   The card explains when the exit has no working IPv6 route.
 - **UDP and QUIC support.** UDP traffic, including DNS and applications using
@@ -137,11 +138,16 @@ The macOS and Linux packages are built from the same sources but have **not
 been tested** by the author. They are published as a convenience; use them at
 your own risk and report problems in the issue tracker.
 
-- **macOS:** `y-node-desktop-<version>-macos-x64.zip` (Intel) and
-  `y-node-desktop-<version>-macos-arm64.zip` (Apple silicon). The bundle is
-  signed ad hoc, so Gatekeeper may require **Open** from the context menu.
-- **Linux:** `y-node-desktop-<version>-linux-x64.tar.gz`. It needs GTK 3 and
-  the usual Flutter runtime libraries; unpack the archive and run
+- **macOS:** `y-node-desktop-<version>-macos-x64.pkg` (Intel) and
+  `y-node-desktop-<version>-macos-arm64.pkg` (Apple silicon) install the app
+  into **Applications** for every user. The portable
+  `y-node-desktop-<version>-macos-x64.zip` and `...-macos-arm64.zip` archives
+  contain the same `Y-Node.app`. The bundle is signed ad hoc, so Gatekeeper may
+  require **Open** from the context menu.
+- **Linux:** `y-node-desktop-<version>-linux-x64.deb` installs the app into
+  `/opt/y-node-desktop` with a menu entry and an icon (Debian and Ubuntu). The
+  portable `y-node-desktop-<version>-linux-x64.tar.gz` needs GTK 3 and the usual
+  Flutter runtime libraries; unpack the archive and run
   `y-node-desktop/y-node-desktop`.
 
 To access only internal Yggdrasil resources, it is enough to configure a
@@ -150,14 +156,9 @@ need an Exit Node profile, for example from X-Node.
 
 ## How it works
 
-```
-┌──────────────────────────────┐        ┌──────────────────────────────┐
-│ Flutter window               │  HTTP  │ y-node-core (Go)             │
-│  Tunnel / Peers / Services / │ ─────▶ │  Yggdrasil node              │
-│  Exit / Proxy / Logs /       │  JSON  │  HTTP proxy  127.0.0.1:7890  │
-│  Settings                    │        │  SOCKS5      127.0.0.1:7891  │
-└──────────────────────────────┘        │  system proxy (WinINET, ...) │
-                                        └──────────────────────────────┘
+```mermaid
+flowchart LR
+    W["Flutter window<br/>Tunnel / Peers / Services /<br/>Exit / Proxy / Logs / Settings"] <-->|"HTTP JSON<br/>127.0.0.1:7799"| C["y-node-core (Go)<br/>Yggdrasil node<br/>HTTP proxy 127.0.0.1:7890<br/>SOCKS5 127.0.0.1:7891<br/>system proxy"]
 ```
 
 The window is a thin client. The core owns the node, the proxy, the
@@ -234,26 +235,6 @@ scripts/              build scripts, Inno Setup script, per-user installer
 docs/screenshots/     the screenshots used in this file
 ```
 
-The core API listens on `127.0.0.1:7799`:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/v1/health` | readiness probe |
-| GET | `/v1/state` | counters, address, proxy ports, exit state |
-| POST | `/v1/connect`, `/v1/disconnect` | start and stop the tunnel |
-| POST | `/v1/system-proxy` | `{"enabled": true}` |
-| GET/PUT | `/v1/config` | read and write the configuration |
-| GET/POST/DELETE | `/v1/peers` | peer list |
-| POST | `/v1/peers/settings` | automatic peer count and replacement |
-| POST | `/v1/peers/auto` | download the public peer list and pick live nodes |
-| POST | `/v1/peers/probe` | latency of the configured peers |
-| GET/POST/DELETE | `/v1/exit` | exit profiles |
-| POST | `/v1/exit/link` | add an X-Node `yggnode://exit` link |
-| POST | `/v1/exit/check` | ask the exit node to resolve a name |
-| POST | `/v1/dns/check` | probe a list of DNS servers |
-| GET/POST/DELETE | `/v1/services` | the Services page entries |
-| GET | `/v1/logs` | the in-memory log |
-
 ## Building from source
 
 The repository keeps the two halves independent, so the core can be rebuilt
@@ -262,15 +243,15 @@ without Flutter and the window without Go.
 ### Windows (x64, portable ZIP and installer)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.5
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Version 1.5.6
 ```
 
 Produces:
 
 * `dist\windows\` — the plain bundle, runnable without installation;
-* `dist\y-node-desktop-1.5.5-windows-x64.zip` — the portable archive with
+* `dist\y-node-desktop-1.5.6-windows-x64.zip` — the portable archive with
   `install-windows.ps1` and `uninstall-windows.ps1`;
-* `dist\y-node-desktop-1.5.5-x64-setup.exe` — an Inno Setup installer, built
+* `dist\y-node-desktop-1.5.6-x64-setup.exe` — an Inno Setup installer, built
   when Inno Setup is installed (`winget install JRSoftware.InnoSetup`).
 
 The installer puts the application into **Program Files** for every user and
@@ -279,25 +260,33 @@ the no-install option: `install-windows.ps1` elevates itself and does the same,
 `uninstall-windows.ps1` removes the result. Neither needs a code-signing
 certificate.
 
+An update over a running copy stops it first: the core is asked to quit, which
+disconnects the tunnel and restores the system proxy, and only then are the
+files replaced.
+
 ### macOS
 
 ```bash
-./scripts/build-macos.sh 1.5.5
+./scripts/build-macos.sh 1.5.6
 ```
 
 Needs Xcode command line tools and Flutter. The script builds the core for the
 architecture of the machine, embeds it in `Contents/MacOS`, signs the bundle ad
-hoc and writes `dist/macos/Y-Node.app`.
+hoc, writes `dist/macos/Y-Node.app` and packs the same bundle into
+`dist/y-node-desktop-1.5.6-macos-<arch>.pkg`, an installer that puts the app
+into **Applications** for every user.
 
 ### Linux
 
 ```bash
-./scripts/build-linux.sh 1.5.5
+./scripts/build-linux.sh 1.5.6
 ```
 
 Needs the GTK 3 development headers (`libgtk-3-dev`), `ninja-build`, `cmake`,
-`clang` and Flutter. Writes `dist/linux/y-node-desktop/` and a tarball next to
-it.
+`clang` and Flutter. Writes `dist/linux/y-node-desktop/`, a tarball next to it
+and, when `dpkg-deb` is available, `dist/y-node-desktop-1.5.6-linux-x64.deb`.
+The package installs into `/opt/y-node-desktop`, adds `/usr/bin/y-node-desktop`,
+a menu entry and an icon.
 
 ### Cross-compiling only the core
 

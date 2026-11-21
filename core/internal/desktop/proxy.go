@@ -183,7 +183,11 @@ func (p *Proxy) handleForward(rw http.ResponseWriter, r *http.Request) {
 
 	response, err := p.transport.RoundTrip(out)
 	if err != nil {
-		p.log.Warnf("%s %s: %v", r.Method, r.URL.Host, err)
+		if r.Context().Err() != nil || isClientAbort(err) {
+			p.log.Log("debug", fmt.Sprintf("%s %s: the client gave up", r.Method, r.URL.Host))
+		} else {
+			p.log.Warnf("%s %s: %v", r.Method, r.URL.Host, err)
+		}
 		http.Error(rw, "cannot reach the destination: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -197,8 +201,31 @@ func (p *Proxy) handleForward(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.WriteHeader(response.StatusCode)
 	if _, err := io.Copy(rw, response.Body); err != nil {
-		p.log.Warnf("response body %s: %v", r.URL.Host, err)
+		// The browser closes a tab or cancels a download while the body is
+		// still being copied. Windows reports that as "wsasend: An existing
+		// connection was forcibly closed", which looked like a tunnel failure
+		// in the log although the client was simply gone.
+		if r.Context().Err() != nil || isClientAbort(err) {
+			p.log.Log("debug", fmt.Sprintf("response body %s: the client gave up", r.URL.Host))
+		} else {
+			p.log.Warnf("response body %s: %v", r.URL.Host, err)
+		}
 	}
+}
+
+// isClientAbort reports whether a copy error comes from the local client
+// closing its side of the connection rather than from the destination.
+func isClientAbort(err error) bool {
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"wsasend", "forcibly closed", "broken pipe", "connection reset",
+		"connection aborted", "use of closed network connection",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func removeHopByHop(header http.Header) {
