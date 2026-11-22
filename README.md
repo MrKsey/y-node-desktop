@@ -41,19 +41,22 @@ data path. A desktop has no VPN interface, so the core runs a local HTTP proxy
 on `127.0.0.1:7890` and a SOCKS5 proxy on `127.0.0.1:7891`, and the operating
 system or an application sends traffic to them.
 
-```mermaid
-flowchart LR
-    A["Browser, Telegram,<br/>other apps"] -->|"HTTP 127.0.0.1:7890<br/>SOCKS5 127.0.0.1:7891"| B["Y-Node Desktop core<br/>Yggdrasil node"]
-    B --> C["Yggdrasil network<br/>sites and services<br/>200::/7"]
+```text
+┌─────────────────────────┐      ┌────────────────┐      ┌────────────────────┐
+│ Browser, Telegram       │      │ Y-Node Desktop │      │ Yggdrasil network  │
+│ other apps              │ ───► │ local proxy    │ ───► │ sites and services │
+│ HTTP 7890 / SOCKS5 7891 │ ◄─── │ Yggdrasil node │ ◄─── │ addresses 200::/7  │
+└─────────────────────────┘      └────────────────┘      └────────────────────┘
 ```
 
 **Proxy mode:** only the applications that use the proxy go through Yggdrasil.
 
-```mermaid
-flowchart LR
-    A["Browser, Telegram,<br/>other apps"] --> B["Y-Node Desktop core<br/>local proxy → Yggdrasil node"]
-    B --> C["X-Node exit node<br/>SOCKS5, quotas, allowlist"]
-    C --> D["Internet<br/>sites and services"]
+```text
+┌─────────────────────────┐      ┌────────────────┐      ┌──────────────────┐      ┌───────────┐
+│ Browser, Telegram       │      │ Y-Node Desktop │      │ X-Node exit node │      │ Internet  │
+│ other apps              │ ───► │ local proxy    │ ───► │ SOCKS5, quotas   │ ───► │ sites and │
+│ HTTP 7890 / SOCKS5 7891 │ ◄─── │ Yggdrasil node │ ◄─── │ allowlist        │ ◄─── │ services  │
+└─────────────────────────┘      └────────────────┘      └──────────────────┘      └───────────┘
 ```
 
 **Through an exit node:** traffic travels over Yggdrasil to X-Node and leaves for
@@ -156,9 +159,14 @@ need an Exit Node profile, for example from X-Node.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    W["Flutter window<br/>Tunnel / Peers / Services /<br/>Exit / Proxy / Logs / Settings"] <-->|"HTTP JSON<br/>127.0.0.1:7799"| C["y-node-core (Go)<br/>Yggdrasil node<br/>HTTP proxy 127.0.0.1:7890<br/>SOCKS5 127.0.0.1:7891<br/>system proxy"]
+```text
+┌─────────────────┐                        ┌─────────────────────────────┐
+│ Flutter window  │                        │ y-node-core (Go)            │
+│ Tunnel / Peers  │       HTTP JSON        │ Yggdrasil node              │
+│ Services / Exit │ ◄────────────────────► │ HTTP proxy 127.0.0.1:7890   │
+│ Proxy / Logs    │     127.0.0.1:7799     │ SOCKS5 proxy 127.0.0.1:7891 │
+│ Settings        │                        │ system proxy switch         │
+└─────────────────┘                        └─────────────────────────────┘
 ```
 
 The window is a thin client. The core owns the node, the proxy, the
