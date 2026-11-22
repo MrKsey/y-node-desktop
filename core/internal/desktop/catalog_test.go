@@ -112,3 +112,51 @@ func TestDiscoveryTargetsRespectsTheLimit(t *testing.T) {
 		t.Fatalf("targets = %v, want 3", got)
 	}
 }
+
+// The catalogue is ranked around the detected location: the home country comes
+// first, then the countries nearest to it. A large country must not beat a
+// neighbouring one that is physically closer to the user.
+func TestRankCatalogPutsTheClosestCountriesFirst(t *testing.T) {
+	app := &App{geo: &geoLocation{CountrySlug: "russia", Lat: 60.17, Lon: 24.94}}
+	peers := []CatalogPeer{
+		{URI: "tls://ru-far.example:1", Host: "ru-far.example", Country: "russia", Scheme: "tls"},
+		{URI: "tls://fi-1.example:1", Host: "fi-1.example", Country: "finland", Scheme: "tls"},
+		{URI: "tls://de-1.example:1", Host: "de-1.example", Country: "germany", Scheme: "tls"},
+		{URI: "tls://ru-home.example:1", Host: "ru-home.example", Country: "russia", Scheme: "tls"},
+	}
+	got := app.rankCatalog(peers)
+	if len(got) != 4 {
+		t.Fatalf("ranked = %v", got)
+	}
+	if got[0].Country != "russia" || got[1].Country != "russia" {
+		t.Fatalf("the home country must come first: %v", got)
+	}
+	if got[2].Country != "finland" || got[3].Country != "germany" {
+		t.Fatalf("the closest countries must follow the home one: %v", got)
+	}
+}
+
+// The round must test the nearest foreign countries, not the farthest ones: the
+// order of the ranked catalogue decides which countries get the spare window.
+func TestDiscoveryTargetsProbesTheClosestCountries(t *testing.T) {
+	app := &App{geo: &geoLocation{CountrySlug: "russia", Lat: 60.17, Lon: 24.94}}
+	peers := []CatalogPeer{
+		{URI: "tls://ru-1.example:1", Host: "ru-1.example", Country: "russia", Scheme: "tls"},
+		{URI: "tls://ru-2.example:1", Host: "ru-2.example", Country: "russia", Scheme: "tls"},
+		{URI: "tls://ru-3.example:1", Host: "ru-3.example", Country: "russia", Scheme: "tls"},
+		{URI: "tls://ru-4.example:1", Host: "ru-4.example", Country: "russia", Scheme: "tls"},
+		{URI: "tls://fi-1.example:1", Host: "fi-1.example", Country: "finland", Scheme: "tls"},
+		{URI: "tls://br-1.example:1", Host: "br-1.example", Country: "brazil", Scheme: "tls"},
+	}
+	got := discoveryTargets(app.rankCatalog(peers), "russia", 5)
+	hosts := map[string]bool{}
+	for _, uri := range got {
+		hosts[peerHost(uri)] = true
+	}
+	if !hosts["fi-1.example"] {
+		t.Fatalf("the nearest foreign country is missing from %v", got)
+	}
+	if hosts["br-1.example"] {
+		t.Fatalf("the farthest country took the window instead of a closer one: %v", got)
+	}
+}

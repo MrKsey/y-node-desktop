@@ -171,10 +171,10 @@ func (a *App) rankCatalog(peers []CatalogPeer) []CatalogPeer {
 		}
 		delta := distance(out[i]) - distance(out[j])
 		if delta > 1 {
-			return true
+			return false
 		}
 		if delta < -1 {
-			return false
+			return true
 		}
 		if out[i].Country != out[j].Country {
 			return out[i].Country < out[j].Country

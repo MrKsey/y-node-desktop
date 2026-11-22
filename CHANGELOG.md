@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.11
+
+- **The peer list is ranked from the nearest country, not the farthest one.** The comparator of the catalogue had its two distance branches swapped, so after the home country the list went from the far end of the world towards the border, and the quarter of the discovery window kept for the closest foreign countries was spent on the most distant ones: a search from Moscow tested Brazil while Finland was never asked. The countries now follow the distance from the detected location, nearest first, both on the Peers page and in the round itself.
+
 ## 1.5.10
 
 - **Find peers ranks the answers by access time, not by country.** The results were grouped by country: every server of the detected country came first, so a node in Vladivostok was shown above a faster one in Finland, and the replacement pool kept the same order. The country is only a prior now: the round still starts with the local servers, the list follows the measured latency alone, and a quarter of the discovery window is always kept for the closest foreign countries, so a large home country cannot hide a faster neighbour across the border.
