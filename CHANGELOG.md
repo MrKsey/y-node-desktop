@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.10
+
+- **Find peers ranks the answers by access time, not by country.** The results were grouped by country: every server of the detected country came first, so a node in Vladivostok was shown above a faster one in Finland, and the replacement pool kept the same order. The country is only a prior now: the round still starts with the local servers, the list follows the measured latency alone, and a quarter of the discovery window is always kept for the closest foreign countries, so a large home country cannot hide a faster neighbour across the border.
+
 ## 1.5.9
 
 - **The pinned exit peer and its resolver can be removed while the exit is off.** With the exit switch off, the pinned peer of the exit node shows a cross instead of the lock, and the cross takes the peer out of the active list; the resolver of the **DNS exit node** switch does the same in the tunnel DNS list. Switching the exit on brings the peer and the resolver back and the crosses turn into locks again. The **DNS exit node** switch keeps its position, so the choice is not lost.

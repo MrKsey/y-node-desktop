@@ -562,17 +562,19 @@ class AppState extends ChangeNotifier {
         error = 'No live node was found. Try again later.';
         return;
       }
-      // The core picks the round: every server of the home country first, then
-      // the closest countries, one URI per server. The window used to send the
-      // first sixty catalogue rows, which were mostly transports of the same
-      // machines and left half of the local servers out.
+      // The core picks the round: the servers of the home country first, then
+      // the closest countries, one URI per server. The home country keeps most
+      // of the window but never all of it, so a faster neighbour across the
+      // border is measured too. The window used to send the first sixty
+      // catalogue rows, which were mostly transports of the same machines and
+      // left half of the local servers out.
       final data = await client.post('/v1/peers/find', {
         'limit': 120,
       }, const Duration(seconds: 180));
       if (generation != _probeGeneration) return;
       probeResults = _resultsOf(data);
       peersUpdatedAt = DateTime.now();
-      final alive = _preferLocal(probeResults.where((row) => row.up).toList());
+      final alive = _fastest(probeResults.where((row) => row.up).toList());
       if (alive.isEmpty) {
         error = 'No live node was found. Try again later.';
         return;
@@ -608,7 +610,7 @@ class AppState extends ChangeNotifier {
   /// Fills the tunnel up to the configured size with the fastest answers and
   /// puts the rest into the replacement pool.
   Future<int> addBestPeers() async {
-    final alive = _preferLocal(probeResults.where((row) => row.up).toList());
+    final alive = _fastest(probeResults.where((row) => row.up).toList());
     if (alive.isEmpty) return 0;
     final wanted = _peerTarget;
     final active = <String>[...configuredPeers];
@@ -723,24 +725,15 @@ class AppState extends ChangeNotifier {
   /// the whole catalogue.
   static const int _poolLimit = 20;
 
-  /// Orders the answers the way the Android client does: the peers of the
-  /// detected country (or the one the user picked) come first, then the rest by
-  /// latency. A node next door is worth a few milliseconds.
-  List<ProbeResult> _preferLocal(List<ProbeResult> rows) {
-    final home = countrySlug.isNotEmpty ? countrySlug : detected.countrySlug;
-    final byUri = {for (final peer in candidates) peer.uri: peer};
-    int countryOf(ProbeResult row) {
-      final peer = byUri[row.uri];
-      if (peer == null) return 1;
-      if (home.isEmpty) return 0;
-      return peer.country == home ? 0 : 1;
-    }
-
+  /// Orders the answers by the measured access time: the fastest first. The
+  /// country is not a tie-breaker, because the nearest peers may sit across the
+  /// border: a server in Finland can answer quicker than one in Vladivostok.
+  List<ProbeResult> _fastest(List<ProbeResult> rows) {
     final sorted = [...rows];
     sorted.sort((a, b) {
-      final homeDelta = countryOf(a) - countryOf(b);
-      if (homeDelta != 0) return homeDelta;
-      return a.latencyMs.compareTo(b.latencyMs);
+      final byLatency = a.latencyMs.compareTo(b.latencyMs);
+      if (byLatency != 0) return byLatency;
+      return a.uri.compareTo(b.uri);
     });
     return sorted;
   }

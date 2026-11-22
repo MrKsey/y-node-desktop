@@ -65,6 +65,39 @@ func TestDiscoveryTargetsFallsBackToTheClosestCountries(t *testing.T) {
 	}
 }
 
+// A country with more servers than the round can test still leaves part of the
+// window to the closest foreign countries: the nearest peers may sit across the
+// border, so the round must be able to compare them with the local ones.
+func TestDiscoveryTargetsKeepsRoomForTheClosestCountries(t *testing.T) {
+	var peers []CatalogPeer
+	for _, host := range []string{"ru-1", "ru-2", "ru-3", "ru-4", "ru-5", "ru-6", "ru-7", "ru-8"} {
+		peers = append(peers, CatalogPeer{
+			URI:     "tls://" + host + ".example:1",
+			Host:    host + ".example",
+			Country: "russia",
+			Scheme:  "tls",
+		})
+	}
+	peers = append(peers,
+		CatalogPeer{URI: "tls://fi-1.example:1", Host: "fi-1.example", Country: "finland", Scheme: "tls"},
+		CatalogPeer{URI: "tls://de-1.example:1", Host: "de-1.example", Country: "germany", Scheme: "tls"},
+	)
+	got := discoveryTargets(peers, "russia", 8)
+	if len(got) != 8 {
+		t.Fatalf("targets = %d, want the limit 8: %v", len(got), got)
+	}
+	hosts := map[string]bool{}
+	for _, uri := range got {
+		hosts[peerHost(uri)] = true
+	}
+	if !hosts["fi-1.example"] || !hosts["de-1.example"] {
+		t.Fatalf("the closest countries are missing from %v", got)
+	}
+	if !hosts["ru-1.example"] {
+		t.Fatalf("the home servers are missing from %v", got)
+	}
+}
+
 func TestDiscoveryTargetsRespectsTheLimit(t *testing.T) {
 	var peers []CatalogPeer
 	for _, host := range []string{"a", "b", "c", "d", "e"} {

@@ -211,10 +211,12 @@ func bestPerHost(peers []CatalogPeer) []CatalogPeer {
 	return out
 }
 
-// discoveryTargets picks the servers of one discovery round: every node of the
-// home country first, then the closest countries, one URI per server. The
-// catalogue is ranked around the detected or selected country, so the tail of
-// the list is the fallback for a user whose country has no peers of its own.
+// discoveryTargets picks the servers of one discovery round: the nodes of the
+// home country first and the closest countries next, one URI per server. The
+// country is only a prior, not the answer: the nearest peers may sit across the
+// border, and a large country has servers on the other side of the continent,
+// so a quarter of the window is always kept for the closest foreign countries.
+// A user whose country has no peers at all gets the closest countries instead.
 func discoveryTargets(peers []CatalogPeer, home string, limit int) []string {
 	if limit < 1 || len(peers) == 0 {
 		return nil
@@ -222,6 +224,13 @@ func discoveryTargets(peers []CatalogPeer, home string, limit int) []string {
 	unique := bestPerHost(peers)
 	out := make([]string, 0, limit)
 	seen := make(map[string]bool, len(unique))
+	homeBudget := limit
+	if home != "" {
+		homeBudget = limit - limit/4
+		if homeBudget < 1 {
+			homeBudget = 1
+		}
+	}
 	if home != "" {
 		for _, peer := range unique {
 			if peer.Country != home {
@@ -229,10 +238,24 @@ func discoveryTargets(peers []CatalogPeer, home string, limit int) []string {
 			}
 			seen[peer.Host] = true
 			out = append(out, peer.URI)
-			if len(out) >= limit {
-				return out
+			if len(out) >= homeBudget {
+				break
 			}
 		}
+		// The rest of the window goes to the closest countries in the ranked
+		// order, so the round can compare a local server with a faster one on
+		// the other side of the border.
+		for _, peer := range unique {
+			if len(out) >= limit {
+				break
+			}
+			if peer.Country == home || seen[peer.Host] {
+				continue
+			}
+			seen[peer.Host] = true
+			out = append(out, peer.URI)
+		}
+		return out
 	}
 	for _, peer := range unique {
 		if len(out) >= limit {
