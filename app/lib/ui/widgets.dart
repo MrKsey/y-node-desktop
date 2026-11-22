@@ -643,6 +643,7 @@ class PeerTile extends StatelessWidget {
     this.place,
     this.flag = '',
     this.pinned = false,
+    this.locked = true,
     this.highlight = false,
     this.onTap,
     this.trailing,
@@ -656,6 +657,10 @@ class PeerTile extends StatelessWidget {
   final String? place;
   final String flag;
   final bool pinned;
+
+  /// The lock badge of a pinned peer. It is off while the exit node is
+  /// switched off: the row offers a cross instead.
+  final bool locked;
   final bool highlight;
   final VoidCallback? onTap;
   final Widget? trailing;
@@ -706,7 +711,7 @@ class PeerTile extends StatelessWidget {
                 color: color,
               ),
             ),
-          if (pinned)
+          if (pinned && locked)
             Positioned(
               right: -2,
               bottom: -2,

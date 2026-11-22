@@ -259,9 +259,25 @@ func (a *API) Handler() http.Handler {
 
 	mux.HandleFunc("GET /v1/exit", func(rw http.ResponseWriter, _ *http.Request) {
 		profiles, active, enabled := a.app.ExitProfiles()
+		peerHidden, dnsHidden := a.app.ExitDismissed()
 		writeJSON(rw, http.StatusOK, map[string]any{
 			"profiles": profiles, "activeId": active, "enabled": enabled,
+			"peerHidden": peerHidden, "dnsHidden": dnsHidden,
 		})
+	})
+	mux.HandleFunc("POST /v1/exit/hide-peer", func(rw http.ResponseWriter, _ *http.Request) {
+		if err := a.app.HideExitPeer(); err != nil {
+			writeError(rw, err)
+			return
+		}
+		writeJSON(rw, http.StatusOK, a.app.State())
+	})
+	mux.HandleFunc("POST /v1/exit/hide-dns", func(rw http.ResponseWriter, _ *http.Request) {
+		if err := a.app.HideExitDNS(); err != nil {
+			writeError(rw, err)
+			return
+		}
+		writeJSON(rw, http.StatusOK, a.app.State())
 	})
 	mux.HandleFunc("POST /v1/exit/link", func(rw http.ResponseWriter, r *http.Request) {
 		var body struct {

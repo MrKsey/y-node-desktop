@@ -28,6 +28,11 @@ class AppState extends ChangeNotifier {
   String activeExitId = '';
   bool exitEnabled = false;
 
+  /// The user removed the pinned peer of the exit node from the active list
+  /// while the exit was off. Switching the exit on clears both flags.
+  bool exitPeerHidden = false;
+  bool exitDnsHidden = false;
+
   /// The public peer list with every transport, the countries it contains and
   /// the detected location, exactly what the Peers page and its browser show.
   List<CatalogPeer> candidates = const [];
@@ -237,6 +242,8 @@ class AppState extends ChangeNotifier {
         ];
         activeExitId = exitJson['activeId'] as String? ?? '';
         exitEnabled = exitJson['enabled'] as bool? ?? false;
+        exitPeerHidden = exitJson['peerHidden'] as bool? ?? false;
+        exitDnsHidden = exitJson['dnsHidden'] as bool? ?? false;
       }
       final statusJson = await client.get('/v1/exit/status');
       if (statusJson is Map<String, dynamic>) {
@@ -814,6 +821,26 @@ class AppState extends ChangeNotifier {
     _restartDnsCheck();
   }
 
+  /// Takes the pinned peer of the exit node out of the active list. The exit
+  /// must be off; switching it on brings the peer back.
+  Future<void> hideExitPeer() async {
+    await _run(
+      () => client.post('/v1/exit/hide-peer', const {}),
+      refreshAfter: true,
+    );
+  }
+
+  /// Takes the resolver the exit publishes out of the tunnel list. The "DNS
+  /// exit node" switch keeps its value, so switching the exit on adds the
+  /// resolver back.
+  Future<void> hideExitDns() async {
+    await _run(
+      () => client.post('/v1/exit/hide-dns', const {}),
+      refreshAfter: true,
+    );
+    _restartDnsCheck();
+  }
+
   Future<void> removeExit(String id) async {
     await _run(
       () => client.delete('/v1/exit?id=${Uri.encodeQueryComponent(id)}'),
@@ -1158,7 +1185,7 @@ class AppState extends ChangeNotifier {
   /// seconds looks like a lost setting. The status only fills a profile that
   /// was imported before the server published its resolver.
   String get exitDnsServer {
-    if (!config.exitDnsEnabled) return '';
+    if (!config.exitDnsEnabled || exitDnsHidden) return '';
     for (final profile in exits) {
       if (profile.id == activeExitId && profile.dns.isNotEmpty) {
         return profile.dns;

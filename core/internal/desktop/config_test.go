@@ -123,6 +123,67 @@ func TestExitJSONCarriesTheSwitches(t *testing.T) {
 	}
 }
 
+// The resolver removed from the list while the exit was off must not come back
+// through the runtime configuration: the switch owns it only when the exit is
+// on.
+func TestExitJSONDropsADismissedResolver(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ExitProfiles = []ExitProfile{{
+		ID: "e", Address: "200::1", SocksPort: 1080, APIPort: 1080,
+		DNS: "200:abcd::53", DNSPort: 53,
+	}}
+	cfg.ExitEnabled = true
+	cfg.ExitDNSEnabled = true
+	cfg.ExitDNSHidden = true
+	var payload struct {
+		YggDNS []string `json:"yggDns"`
+	}
+	if err := json.Unmarshal([]byte(cfg.exitJSON()), &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range payload.YggDNS {
+		if server == "200:abcd::53" {
+			t.Fatalf("a dismissed resolver is still in yggDns: %v", payload.YggDNS)
+		}
+	}
+	cfg.ExitDNSHidden = false
+	if err := json.Unmarshal([]byte(cfg.exitJSON()), &payload); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, server := range payload.YggDNS {
+		if server == "200:abcd::53" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the resolver did not come back: %v", payload.YggDNS)
+	}
+}
+
+// Switching the exit on is what brings the peer and the resolver back: the
+// cross on the row is not a permanent delete.
+func TestEnablingTheExitClearsTheDismissedRows(t *testing.T) {
+	isolateConfig(t)
+	a := &App{cfg: DefaultConfig()}
+	a.cfg.ExitProfiles = []ExitProfile{{
+		ID: "e", Address: "200::1", SocksPort: 1080, APIPort: 1080,
+		Peer: "tls://exit.example:13338", DNS: "200:abcd::53", DNSPort: 53,
+	}}
+	a.cfg.ExitPeerHidden = true
+	a.cfg.ExitDNSHidden = true
+	if err := a.SetExitEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	peerHidden, dnsHidden := a.ExitDismissed()
+	if peerHidden || dnsHidden {
+		t.Fatalf("dismissed flags survived the switch: %v/%v", peerHidden, dnsHidden)
+	}
+	if !a.cfg.ExitEnabled {
+		t.Fatal("the exit was not enabled")
+	}
+}
+
 func TestPeerListAddsOnlyTheActiveExitPeer(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Peers = []string{"tls://public.example:13338"}

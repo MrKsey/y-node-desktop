@@ -220,13 +220,22 @@ class _SettingsPageState extends State<SettingsPage> {
                         : _presetLabel(app, server),
                     check: app.dnsChecks[server],
                     fromExit: exitResolver.isNotEmpty && server == exitResolver,
+                    // With the exit node off its resolver is not in the tunnel:
+                    // the row offers a cross instead of the lock, and the
+                    // "DNS exit node" switch adds it back when the exit is on.
+                    removable:
+                        exitResolver.isNotEmpty &&
+                        server == exitResolver &&
+                        !app.exitEnabled,
                     onCheck: app.dnsChecking
                         ? null
                         : () async {
                             await app.checkDnsServer(server);
                             if (mounted) setState(() {});
                           },
-                    onRemove: () => _removeDns(app, mode, server),
+                    onRemove: server == exitResolver && !app.exitEnabled
+                        ? app.hideExitDns
+                        : () => _removeDns(app, mode, server),
                   ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
@@ -778,6 +787,7 @@ class _DnsTile extends StatelessWidget {
     required this.check,
     this.label,
     this.fromExit = false,
+    this.removable = false,
     this.onCheck,
     this.onAdd,
     this.onRemove,
@@ -787,6 +797,10 @@ class _DnsTile extends StatelessWidget {
   final DnsCheck? check;
   final String? label;
   final bool fromExit;
+
+  /// The row belongs to the exit node but may be removed: the exit is off, so
+  /// the resolver is not in the tunnel. The switch brings it back.
+  final bool removable;
   final VoidCallback? onCheck;
   final VoidCallback? onAdd;
   final VoidCallback? onRemove;
@@ -845,7 +859,7 @@ class _DnsTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (fromExit)
+          if (fromExit && !removable)
             Tooltip(
               message: 'Managed by the DNS exit node switch',
               child: Padding(

@@ -767,6 +767,44 @@ func (a *App) ExitProfiles() ([]ExitProfile, string, bool) {
 	return append([]ExitProfile(nil), a.cfg.ExitProfiles...), a.cfg.ExitActiveID, a.cfg.ExitEnabled
 }
 
+// ExitDismissed reports what the user removed from the active list while the
+// exit node was off: its pinned peer and its resolver.
+func (a *App) ExitDismissed() (peer bool, dns bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.ExitPeerHidden, a.cfg.ExitDNSHidden
+}
+
+// HideExitPeer takes the pinned peer of the exit node out of the active list.
+// It only makes sense while the exit is off; switching it on brings the peer
+// back.
+func (a *App) HideExitPeer() error {
+	a.mu.Lock()
+	a.cfg.ExitPeerHidden = true
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		return err
+	}
+	a.applyExitConfig()
+	return nil
+}
+
+// HideExitDNS takes the resolver the exit publishes out of the tunnel list.
+// The "DNS exit node" switch keeps its value, so switching the exit on adds the
+// resolver back.
+func (a *App) HideExitDNS() error {
+	a.mu.Lock()
+	a.cfg.ExitDNSHidden = true
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := cfg.save(); err != nil {
+		return err
+	}
+	a.applyExitConfig()
+	return nil
+}
+
 // EditExit replaces one profile by its id, or adds it when the id is new. The
 // invite and the token are kept when the window leaves them empty, so a form
 // that was opened before the exit issued a token does not wipe it.
@@ -1107,6 +1145,12 @@ func (a *App) SetExitActive(id string) error {
 func (a *App) SetExitEnabled(enable bool) error {
 	a.mu.Lock()
 	a.cfg.ExitEnabled = enable && len(a.cfg.ExitProfiles) > 0
+	if a.cfg.ExitEnabled {
+		// The peer and the resolver removed while the exit was off come back
+		// with the switch: the cross on the row is not a permanent delete.
+		a.cfg.ExitPeerHidden = false
+		a.cfg.ExitDNSHidden = false
+	}
 	cfg := a.cfg
 	a.mu.Unlock()
 	if err := cfg.save(); err != nil {

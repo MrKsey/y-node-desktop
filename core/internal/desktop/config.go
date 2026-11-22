@@ -86,6 +86,14 @@ type Config struct {
 	ExitDNSEnabled bool `json:"exitDnsEnabled"`
 	// ExitUDP relays public UDP (DNS, QUIC) through the exit.
 	ExitUDP bool `json:"exitUdp"`
+	// ExitPeerHidden remembers that the user removed the pinned peer of the
+	// exit node from the active list while the exit was off. Turning the exit
+	// on brings the peer back.
+	ExitPeerHidden bool `json:"exitPeerHidden,omitempty"`
+	// ExitDNSHidden is the same for the resolver the exit publishes: removing
+	// it while the exit is off keeps it out of the tunnel list until the exit
+	// is on again.
+	ExitDNSHidden bool `json:"exitDnsHidden,omitempty"`
 	// IPv6 selects how outbound names are resolved: "auto", "prefer" or "off".
 	IPv6 string `json:"ipv6"`
 	// ExitLabelEnabled sends the device name (or ExitLabel) to the exit node
@@ -394,7 +402,7 @@ func (c Config) exitJSON() string {
 	// server, so it belongs to the in-network list; the "DNS exit node" switch
 	// owns it.
 	yggDNS := append([]string(nil), c.YggDNS...)
-	if c.ExitDNSEnabled {
+	if c.ExitDNSEnabled && !c.ExitDNSHidden {
 		if profile, ok := c.activeProfile(); ok && profile.DNS != "" {
 			present := false
 			for _, server := range yggDNS {

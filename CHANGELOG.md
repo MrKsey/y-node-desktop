@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.9
+
+- **The pinned exit peer and its resolver can be removed while the exit is off.** With the exit switch off, the pinned peer of the exit node shows a cross instead of the lock, and the cross takes the peer out of the active list; the resolver of the **DNS exit node** switch does the same in the tunnel DNS list. Switching the exit on brings the peer and the resolver back and the crosses turn into locks again. The **DNS exit node** switch keeps its position, so the choice is not lost.
+
 ## 1.5.8
 
 - **A resource added by hand is never shown as built in.** The "built in" badge belongs to the catalogue, but it was decided by the entry id: editing a built-in entry into another address kept its `builtin:` id, and an older build could leave a `builtIn` flag in `config.json`, so `https://2ip.io` appeared with the badge. Editing the address of a built-in entry now turns it into a plain user resource and hides the original default; a configuration written by an older build is repaired on start, so an existing entry loses the badge after the update.

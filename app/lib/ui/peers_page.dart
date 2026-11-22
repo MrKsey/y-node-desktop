@@ -387,9 +387,14 @@ class _ActiveCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final statuses = {for (final peer in app.peers) peer.uri: peer};
     final exitPeer = _exitPeer(app);
+    // The pinned peer is part of the tunnel only while the exit is on. With the
+    // exit off the row shows a cross, and the user may take it out of the
+    // list; switching the exit on brings it back.
+    final showExit =
+        exitPeer.isNotEmpty && (app.exitEnabled || !app.exitPeerHidden);
     final configured = app.configuredPeers;
     final list = [
-      if (exitPeer.isNotEmpty) exitPeer,
+      if (showExit) exitPeer,
       for (final uri in configured)
         if (uri != exitPeer) uri,
     ];
@@ -409,17 +414,24 @@ class _ActiveCard extends StatelessWidget {
               uri: uri,
               status: _statusOf(statuses, uri),
               pinned: uri == exitPeer,
+              locked: uri != exitPeer || app.exitEnabled,
               title: uri == exitPeer ? _exitName(app) : null,
               flag: _flagOf(app, uri, isExit: uri == exitPeer),
               place: _placeOf(app, uri, isExit: uri == exitPeer),
-              trailing: uri == exitPeer
+              trailing: uri != exitPeer
+                  ? IconButton(
+                      tooltip: 'Remove peer',
+                      onPressed: app.busy ? null : () => app.removePeer(uri),
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                    )
+                  : app.exitEnabled
                   ? const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 12),
                       child: Icon(Icons.lock_rounded, size: 18),
                     )
                   : IconButton(
                       tooltip: 'Remove peer',
-                      onPressed: app.busy ? null : () => app.removePeer(uri),
+                      onPressed: app.busy ? null : app.hideExitPeer,
                       icon: const Icon(Icons.close_rounded, size: 18),
                     ),
             ),
