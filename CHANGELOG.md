@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.12
+
+- **A plain SOCKS5 exit no longer shows as "Unreachable".** A profile added without an invite and token has no status API, so the missing answer was read as a dead node while every connection went through it; the bridge now checks the SOCKS port when the API stays silent, marks such a profile online with a "socks5" label and keeps "unreachable" for a node whose SOCKS port does not answer either.
+
 ## 1.5.11
 
 - **The peer list is ranked from the nearest country, not the farthest one.** The comparator of the catalogue had its two distance branches swapped, so after the home country the list went from the far end of the world towards the border, and the quarter of the discovery window kept for the closest foreign countries was spent on the most distant ones: a search from Moscow tested Brazil while Finland was never asked. The countries now follow the distance from the detected location, nearest first, both on the Peers page and in the round itself.

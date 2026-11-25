@@ -862,6 +862,7 @@ class ExitProfileStatus {
     this.latencyMs = 0,
     this.error = '',
     this.authenticated = false,
+    this.apiMissing = false,
     this.connections = 0,
     this.maxConnections = 0,
     this.udpAssociations = 0,
@@ -879,6 +880,10 @@ class ExitProfileStatus {
   final double latencyMs;
   final String error;
   final bool authenticated;
+
+  /// True when the SOCKS port answered but the status API did not: a plain
+  /// SOCKS5 proxy. The profile is online, the counters are simply absent.
+  final bool apiMissing;
   final int connections;
   final int maxConnections;
   final int udpAssociations;
@@ -897,6 +902,7 @@ class ExitProfileStatus {
         latencyMs: (json['latencyMs'] as num?)?.toDouble() ?? 0,
         error: json['error'] as String? ?? '',
         authenticated: json['authenticated'] as bool? ?? false,
+        apiMissing: json['apiMissing'] as bool? ?? false,
         connections: (json['connections'] as num?)?.toInt() ?? 0,
         maxConnections: (json['maxConns'] as num?)?.toInt() ?? 0,
         udpAssociations: (json['udpAssociations'] as num?)?.toInt() ?? 0,

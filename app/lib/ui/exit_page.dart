@@ -778,6 +778,7 @@ class _ExitRow extends StatelessWidget {
         ? AppColors.offline
         : theme.colorScheme.onSurfaceVariant;
     final label = switch (state) {
+      'online' when (health?.apiMissing ?? false) => 'socks5',
       'online' => 'online',
       'unreachable' => 'unreachable',
       'denied' => 'not allowed',
