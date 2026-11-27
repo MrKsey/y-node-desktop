@@ -1351,8 +1351,9 @@ func (a *App) maintainPeers(force bool) {
 
 	live := map[string]bool{}
 	var rows []struct {
-		URI string `json:"uri"`
-		Up  bool   `json:"up"`
+		URI       string  `json:"uri"`
+		Up        bool    `json:"up"`
+		LatencyMs float64 `json:"latencyMs"`
 	}
 	if err := json.Unmarshal([]byte(a.node.GetPeersJSON()), &rows); err == nil {
 		// The node reports the URI it was given, but a normalised link (the
@@ -1360,9 +1361,14 @@ func (a *App) maintainPeers(force bool) {
 		// still count as the same server: comparing hosts keeps a live peer
 		// from being replaced. Two transports of one host collapse into one
 		// entry, and a single live transport is enough.
+		//
+		// A link is live only when the overlay measures it: the core keeps the
+		// TCP socket open after ironwood has already dropped the peer, so such
+		// a link reports "up" while nothing is routed through it and the
+		// latency stays zero.
 		for _, row := range rows {
 			host := peerHost(row.URI)
-			live[host] = live[host] || row.Up
+			live[host] = live[host] || (row.Up && row.LatencyMs > 0)
 		}
 	}
 

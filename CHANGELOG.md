@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.13
+
+- **The client no longer runs out of local ports after a few minutes of browsing.** Every connection that goes through the exit node is an endpoint of the node's own userspace stack, and a closed one held its port for the default 60-second TIME_WAIT; a browser opened short connections faster than a range of 900 ports could release them, and the dial then failed for the exit health poll, the DNS check and every new proxied connection alike, which looked like a dead core although every link was up. The range is now 4000 ports (61000-64999), the stack chooses the port itself so a lingering one can be reused, and TIME_WAIT is 5 seconds.
+- **A link whose socket is alive but whose overlay session is gone is replaced.** The core reports such a peer as "up" because the TCP connection is open, while ironwood has already dropped it and nothing is routed through it; the peer supervisor now counts only a link with a measured overlay latency as live, so a silent one is swapped for a fresh peer from the pool.
+- **A failed internal dial names its cause in the log.** The number of connected endpoints and of opened and closed connections is logged with the port failure, so the next report shows whether the range was exhausted or something else broke.
+
 ## 1.5.12
 
 - **A plain SOCKS5 exit no longer shows as "Unreachable".** A profile added without an invite and token has no status API, so the missing answer was read as a dead node while every connection went through it; the bridge now checks the SOCKS port when the API stays silent, marks such a profile online with a "socks5" label and keeps "unreachable" for a node whose SOCKS port does not answer either.
