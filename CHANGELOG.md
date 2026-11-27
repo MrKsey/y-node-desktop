@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.14
+
+- **The core no longer freezes under a busy video feed.** Ironwood applied backpressure to a session while its packet reader was waiting for the consumer, and that consumer could be inside a write to the same session: every actor of the overlay stopped answering at once, the exit looked dead and the DNS resolvers timed out until the node was restarted. The bundled copy of ironwood breaks that cycle, so a long browsing session keeps the core responsive. This is the same defect that made the Android client rebuild its tunnel under Reels.
+
 ## 1.5.13
 
 - **The client no longer runs out of local ports after a few minutes of browsing.** Every connection that goes through the exit node is an endpoint of the node's own userspace stack, and a closed one held its port for the default 60-second TIME_WAIT; a browser opened short connections faster than a range of 900 ports could release them, and the dial then failed for the exit health poll, the DNS check and every new proxied connection alike, which looked like a dead core although every link was up. The range is now 4000 ports (61000-64999), the stack chooses the port itself so a lingering one can be reused, and TIME_WAIT is 5 seconds.
