@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.16
+
+- **The forum of the network opens without an exit node.** The resolver of the provider refused `forum.yggdrasil.link` and the system resolver does not know the name, so the page failed even though the address exists as an AAAA record of Yggdrasil; without an exit the public resolver list of the app is now asked directly, the same path the Android client takes.
+- **Adding a peer raises "Peers in the tunnel" in Settings at once.** The core already lifted the target when the list grew, but the page kept the old configuration; the peer list is followed by a fresh read of the settings.
+- **The exit DNS line disappears when the chain is practically loaded.** The panel percentage is rounded down, so a resolver that was one block behind read 99% and the loading line stayed on the exit card forever.
+
 ## 1.5.15
 
 - **A peer tells its story on click.** Every row of the active peer list, on the tunnel screen and on the peers page, opens a dialog with the URI, scheme, port, direction, latency, cost, Yggdrasil address, public key, uptime, traffic and the last error of the link, so a peer that looks slow can be inspected without reading the log.

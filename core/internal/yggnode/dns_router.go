@@ -248,6 +248,23 @@ func (r *dnsRouter) resolveOrdinary(ctx context.Context, query []byte) ([]byte, 
 	if len(response) > 0 {
 		errorAnswer = response
 	}
+	// The exit list (cfg.DNS) is the only public resolver list a fresh install
+	// has: the resolvers of the real network are unknown, and the one of the
+	// provider may refuse a name that exists only as a Yggdrasil address (the
+	// forum of the network is a CNAME to an AAAA record). Without an exit
+	// those servers are ordinary public resolvers, so asking them directly is
+	// the same path the Android client takes.
+	if (!exitPath || len(cfg.SystemDNS) == 0) && len(cfg.DNS) > 0 {
+		publicCtx, publicCancel := context.WithTimeout(ctx, dnsStageTimeout)
+		response := raceResolvers(publicCtx, cfg.DNS, query, r.queryDirect, r.log, "public")
+		publicCancel()
+		if dnsUsable(response) {
+			return response, false
+		}
+		if len(response) > 0 && errorAnswer == nil {
+			errorAnswer = response
+		}
+	}
 	// The configured resolvers may be blocked by the local network (a router
 	// that hijacks port 53, a hotel Wi-Fi). The operating system already knows
 	// which servers work, so the last resort is the system resolver.

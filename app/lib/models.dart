@@ -919,8 +919,11 @@ class ExitProfileStatus {
   final int dnsNodes;
 
   /// True while the resolver is not ready yet: a failed lookup then says
-  /// nothing about the server, the chain is still loading.
-  bool get dnsStarting => dnsState == 'starting' || dnsState == 'syncing';
+  /// nothing about the server, the chain is still loading. A download that
+  /// sits at 99% is not shown: the last blocks arrive slowly while the
+  /// resolver already answers names.
+  bool get dnsStarting =>
+      (dnsState == 'starting' || dnsState == 'syncing') && dnsSyncPercent < 99;
 
   final ExitQuota? quota;
 

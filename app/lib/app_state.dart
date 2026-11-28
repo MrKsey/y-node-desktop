@@ -466,6 +466,10 @@ class AppState extends ChangeNotifier {
 
   Future<void> addPeer(String uri) => _run(() async {
     await client.post('/v1/peers', {'uri': uri.trim()});
+    // The core raises PeerCount when the list grows, so the Settings slider
+    // has to read the configuration again: the peer list alone does not carry
+    // the new target.
+    await loadConfig();
     _publishNotice('Peer added');
   }, refreshAfter: true);
 
