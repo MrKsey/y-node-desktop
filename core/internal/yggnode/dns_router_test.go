@@ -57,8 +57,11 @@ func (f *flakyResolver) address() string { return f.conn.LocalAddr().String() }
 // the same error and the log said nothing.
 func TestDNSRouterDoesNotCacheAnErrorAnswer(t *testing.T) {
 	resolver := newFlakyResolver(t, net.ParseIP("93.184.216.34"))
+	// The public list of the exit points at a closed port: the fallback path
+	// asks it directly when the system resolvers fail, and it must not turn the
+	// SERVFAIL of the first call into an answer of its own.
 	manager, err := newExitManager(
-		`{"enabled":false,"profiles":[],"dns":["`+resolver.address()+`"],"systemDns":["`+resolver.address()+`"]}`,
+		`{"enabled":false,"profiles":[],"dns":["127.0.0.1:1"],"systemDns":["`+resolver.address()+`"]}`,
 		nil, nil, &goLogger{},
 	)
 	if err != nil {
