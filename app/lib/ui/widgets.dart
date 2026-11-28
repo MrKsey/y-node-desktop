@@ -801,6 +801,167 @@ class PeerTile extends StatelessWidget {
   }
 }
 
+/// The details of one peer link, the same sheet the Android client opens from
+/// a row of Active peers.
+Future<void> showPeerDetails(
+  BuildContext context, {
+  required String uri,
+  PeerStatus? status,
+  String title = '',
+  String place = '',
+  String flag = '',
+}) {
+  final parsed = Uri.tryParse(uri);
+  final scheme = parsed?.scheme ?? '';
+  final port = parsed != null && parsed.hasPort ? '${parsed.port}' : '—';
+  final currentError = status?.lastError ?? '';
+  final errorAt = status?.lastErrorUnix ?? 0;
+  final errorValue = currentError.isEmpty
+      ? 'No errors'
+      : errorAt > 0
+      ? '$currentError · ${_peerMoment(errorAt)}'
+      : currentError;
+  final heading = title.trim().isNotEmpty
+      ? title.trim()
+      : place.isNotEmpty
+      ? place
+      : uriHost(uri);
+  return showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      final theme = Theme.of(dialogContext);
+      return AlertDialog(
+        title: Row(
+          children: [
+            FlagBadge(flag: flag, size: 30),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    heading,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                  Text(
+                    'Peer details',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                InfoRow(
+                  label: 'URI',
+                  value: uri,
+                  monospace: true,
+                  onTap: () => copyText(dialogContext, uri, 'Address copied'),
+                ),
+                InfoRow(label: 'Scheme', value: scheme.isEmpty ? '—' : scheme),
+                InfoRow(label: 'Port', value: port),
+                InfoRow(
+                  label: 'Direction',
+                  value: status == null
+                      ? '—'
+                      : status.inbound
+                      ? 'Inbound'
+                      : 'Outbound',
+                ),
+                InfoRow(
+                  label: 'Latency',
+                  value: formatLatency(status?.latencyMs ?? 0),
+                ),
+                InfoRow(
+                  label: 'Cost',
+                  value: status == null ? '—' : '${status.cost}',
+                ),
+                InfoRow(
+                  label: 'Yggdrasil address',
+                  value: status == null || status.ip.isEmpty ? '—' : status.ip,
+                  monospace: true,
+                ),
+                InfoRow(
+                  label: 'Public key',
+                  value: status == null || status.key.isEmpty
+                      ? '—'
+                      : _shortPeerKey(status.key),
+                  monospace: true,
+                ),
+                InfoRow(
+                  label: 'Uptime',
+                  value: status == null
+                      ? '—'
+                      : _peerUptime(status.uptimeSeconds),
+                ),
+                InfoRow(
+                  label: 'Traffic',
+                  value: status == null
+                      ? '—'
+                      : '↓ ${formatBytes(status.rxBytes)} · '
+                            '↑ ${formatBytes(status.txBytes)}',
+                ),
+                InfoRow(
+                  label: 'Last error',
+                  value: errorValue,
+                  valueColor: currentError.isNotEmpty
+                      ? AppColors.offline
+                      : null,
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => copyText(dialogContext, uri, 'Address copied'),
+            child: const Text('Copy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+String _shortPeerKey(String key) {
+  if (key.length <= 20) return key;
+  return '${key.substring(0, 10)}…${key.substring(key.length - 6)}';
+}
+
+String _peerUptime(double seconds) {
+  final total = seconds.round();
+  if (total <= 0) return '—';
+  final days = total ~/ 86400;
+  final hours = (total % 86400) ~/ 3600;
+  final minutes = (total % 3600) ~/ 60;
+  final secs = total % 60;
+  if (days > 0) return '${days}d ${hours}h';
+  if (hours > 0) return '${hours}h ${minutes}m';
+  if (minutes > 0) return '${minutes}m ${secs}s';
+  return '${secs}s';
+}
+
+String _peerMoment(int unix) {
+  final moment = DateTime.fromMillisecondsSinceEpoch(unix * 1000);
+  String two(int value) => value.toString().padLeft(2, '0');
+  return '${two(moment.day)}.${two(moment.month)}.${moment.year} '
+      '${two(moment.hour)}:${two(moment.minute)}';
+}
+
 /// A slider that only writes when the drag ends, like the Android settings.
 class SliderTile extends StatefulWidget {
   const SliderTile({

@@ -686,6 +686,12 @@ func (a *App) AddPeer(uri string) error {
 	}
 	a.cfg.Peers = append(a.cfg.Peers, uri)
 	a.cfg.Pool = removePeerURI(a.cfg.Pool, uri)
+	// Adding a peer beyond the configured size grows the target, the way the
+	// Android client raises its PeerCount: the supervisor must keep every peer
+	// the user added instead of treating one of them as surplus.
+	if len(a.cfg.Peers) > a.cfg.PeerCount {
+		a.cfg.PeerCount = len(a.cfg.Peers)
+	}
 	cfg := a.cfg
 	running := a.running
 	a.mu.Unlock()

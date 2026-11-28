@@ -418,6 +418,14 @@ class _ActiveCard extends StatelessWidget {
               title: uri == exitPeer ? _exitName(app) : null,
               flag: _flagOf(app, uri, isExit: uri == exitPeer),
               place: _placeOf(app, uri, isExit: uri == exitPeer),
+              onTap: () => showPeerDetails(
+                context,
+                uri: uri,
+                status: _statusOf(statuses, uri),
+                title: uri == exitPeer ? _exitName(app) : '',
+                flag: _flagOf(app, uri, isExit: uri == exitPeer),
+                place: _placeOf(app, uri, isExit: uri == exitPeer),
+              ),
               trailing: uri != exitPeer
                   ? IconButton(
                       tooltip: 'Remove peer',

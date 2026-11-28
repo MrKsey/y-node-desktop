@@ -91,6 +91,10 @@ class AppState extends ChangeNotifier {
   DateTime? _dnsReadySince;
   int _dnsGeneration = 0;
 
+  /// The last automatic DNS retry that followed the exit resolver becoming
+  /// ready. Keeps the retry from running on every status poll.
+  DateTime _lastExitDnsRetry = DateTime.fromMillisecondsSinceEpoch(0);
+
   Timer? _fast;
   Timer? _slow;
   Timer? _noticeTimer;
@@ -248,6 +252,21 @@ class AppState extends ChangeNotifier {
       final statusJson = await client.get('/v1/exit/status');
       if (statusJson is Map<String, dynamic>) {
         exitStatus = ExitStatus.fromJson(statusJson);
+      }
+      // A resolver that was still loading its chain when the last check ran
+      // is not dead. Once the exit reports it ready, the check is repeated by
+      // itself, at most every half a minute: the user must not press
+      // "Check now" to see a working DNS.
+      final activeExit = exitStatus.active;
+      final resolver = exitDnsServer;
+      if (activeExit != null &&
+          activeExit.dnsState == 'ready' &&
+          resolver.isNotEmpty &&
+          dnsChecks[resolver]?.ok == false &&
+          DateTime.now().difference(_lastExitDnsRetry) >
+              const Duration(seconds: 30)) {
+        _lastExitDnsRetry = DateTime.now();
+        _restartDnsCheck();
       }
       signature = jsonEncode([peersJson, exitJson, statusJson]);
     } catch (_) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.15
+
+- **A peer tells its story on click.** Every row of the active peer list, on the tunnel screen and on the peers page, opens a dialog with the URI, scheme, port, direction, latency, cost, Yggdrasil address, public key, uptime, traffic and the last error of the link, so a peer that looks slow can be inspected without reading the log.
+- **Adding a peer raises the active peer count.** The count is the number of links the node keeps, and a list longer than it used to leave the new peers unused until the slider was moved by hand; adding a peer now lifts the count to the size of the list.
+- **The exit DNS shows how far its chain download has got.** While the Alfis resolver of the exit node downloads the chain, the DNS tile and the exit card read "Starting…" or "Initializing: N%" instead of "Not working", and the tunnel checks the resolver again once the chain is ready.
+- **The peer count stops at 20 and says what is enough.** The slider is capped at twenty peers and the hint under it says that three to five peers are enough for a healthy tree.
+
 ## 1.5.14
 
 - **The core no longer freezes under a busy video feed.** Ironwood applied backpressure to a session while its packet reader was waiting for the consumer, and that consumer could be inside a write to the same session: every actor of the overlay stopped answering at once, the exit looked dead and the DNS resolvers timed out until the node was restarted. The bundled copy of ironwood breaks that cycle, so a long browsing session keeps the core responsive. This is the same defect that made the Android client rebuild its tunnel under Reels.

@@ -241,6 +241,11 @@ func (a *App) SetPeers(uris []string, pool []string) error {
 	a.mu.Lock()
 	a.cfg.Peers = next
 	a.cfg.Pool = uniquePeers(pool)
+	// A saved list longer than the target raises the target, like AddPeer and
+	// the Android client: the Peers page shows the real size of the tunnel.
+	if len(next) > a.cfg.PeerCount {
+		a.cfg.PeerCount = len(next)
+	}
 	cfg := a.cfg
 	running := a.running
 	a.mu.Unlock()

@@ -56,6 +56,14 @@ class _SettingsPageState extends State<SettingsPage> {
     // keeps the last known one, so the row does not disappear while the exit is
     // offline. With the switch off the resolver is not used at all.
     final exitResolver = app.exitDnsServer;
+    // The resolver of an exit node is not broken while Alfis loads its chain:
+    // the tile shows the download progress instead of "Not working".
+    final exitDns = app.exitStatus.active;
+    final exitDnsPending = exitDns != null && exitDns.dnsStarting
+        ? exitDns.dnsSyncPercent > 0
+              ? 'Initializing: ${exitDns.dnsSyncPercent}%'
+              : 'Starting…'
+        : null;
     final configured = splitList(
       mode == 'system' ? config.systemDns : config.yggDns,
     );
@@ -79,7 +87,10 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               SliderTile(
                 label: 'Peers in the tunnel',
-                hint: 'How many nodes to keep connected at once',
+                hint:
+                    'How many nodes to keep connected at once. 3-5 is enough '
+                    'for a stable tunnel; every extra peer spends traffic and '
+                    'rarely makes it faster. The limit is 20.',
                 value: _peerCount(config).toDouble(),
                 min: 1,
                 max: 20,
@@ -220,6 +231,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         : _presetLabel(app, server),
                     check: app.dnsChecks[server],
                     fromExit: exitResolver.isNotEmpty && server == exitResolver,
+                    pending: server == exitResolver ? exitDnsPending : null,
                     // With the exit node off its resolver is not in the tunnel:
                     // the row offers a cross instead of the lock, and the
                     // "DNS exit node" switch adds it back when the exit is on.
@@ -787,6 +799,7 @@ class _DnsTile extends StatelessWidget {
     required this.check,
     this.label,
     this.fromExit = false,
+    this.pending,
     this.removable = false,
     this.onCheck,
     this.onAdd,
@@ -797,6 +810,11 @@ class _DnsTile extends StatelessWidget {
   final DnsCheck? check;
   final String? label;
   final bool fromExit;
+
+  /// What the exit resolver is doing while it is not ready yet: "Starting…" or
+  /// "Initializing: 42%". Shown instead of "Not working", because a resolver
+  /// that is still loading its chain did not fail.
+  final String? pending;
 
   /// The row belongs to the exit node but may be removed: the exit is off, so
   /// the resolver is not in the tunnel. The switch brings it back.
@@ -809,10 +827,14 @@ class _DnsTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final ok = check?.ok ?? false;
+    final failed = check != null && !ok;
+    final waiting = failed && fromExit && pending != null;
     final color = check == null
         ? theme.colorScheme.onSurfaceVariant
         : ok
         ? AppColors.online
+        : waiting
+        ? Colors.orange
         : AppColors.offline;
     return ListTile(
       dense: true,
@@ -822,6 +844,8 @@ class _DnsTile extends StatelessWidget {
             ? (fromExit ? Icons.vpn_lock_rounded : Icons.dns_outlined)
             : ok
             ? Icons.check_circle_rounded
+            : waiting
+            ? Icons.sync_rounded
             : Icons.error_outline_rounded,
         size: 20,
         color: color,
@@ -830,7 +854,7 @@ class _DnsTile extends StatelessWidget {
         server,
         style: TextStyle(
           fontFamily: 'monospace',
-          color: check != null && !ok ? AppColors.offline : null,
+          color: failed && !waiting ? AppColors.offline : null,
         ),
       ),
       subtitle: Column(
@@ -844,6 +868,8 @@ class _DnsTile extends StatelessWidget {
                   ? (check!.via == 'tcp'
                         ? 'Resolved in ${check!.ms.toStringAsFixed(0)} ms over TCP'
                         : 'Resolved in ${check!.ms.toStringAsFixed(0)} ms')
+                  : waiting
+                  ? pending!
                   : 'Not working',
               style: theme.textTheme.labelSmall?.copyWith(color: color),
             ),

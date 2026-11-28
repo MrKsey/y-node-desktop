@@ -224,6 +224,16 @@ class _TunnelPageState extends State<TunnelPage>
                         ? (catalogPeerOf(app, uri)?.flag ?? exitFlag)
                         : (catalogPeerOf(app, uri)?.flag ?? ''),
                     place: catalogPlace(catalogPeerOf(app, uri)),
+                    onTap: () => showPeerDetails(
+                      context,
+                      uri: uri,
+                      status: _statusOf(statuses, uri),
+                      title: uri == exitPeer ? (exitProfile?.name ?? '') : '',
+                      flag: uri == exitPeer
+                          ? (catalogPeerOf(app, uri)?.flag ?? exitFlag)
+                          : (catalogPeerOf(app, uri)?.flag ?? ''),
+                      place: catalogPlace(catalogPeerOf(app, uri)),
+                    ),
                   ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
@@ -1040,6 +1050,33 @@ class _ExitCardState extends State<_ExitCard> {
                 : app.setExitEnabled,
           ),
         ),
+        if (connected &&
+            app.exitEnabled &&
+            app.config.exitDnsEnabled &&
+            active != null &&
+            active.dnsStarting)
+          ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            leading: const Icon(
+              Icons.sync_rounded,
+              size: 20,
+              color: AppColors.pending,
+            ),
+            title: Text(
+              active.dnsSyncPercent > 0
+                  ? 'Exit DNS is loading the chain: '
+                        '${active.dnsSyncPercent}%'
+                  : 'Exit DNS is starting: the chain is not loaded yet',
+              style: theme.textTheme.bodyMedium,
+            ),
+            subtitle: Text(
+              'The resolver of the exit downloads the Alfis chain on its first '
+              'start. Names resolve when it is done; the DNS check repeats by '
+              'itself.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
         if (connected && app.exitEnabled && quota != null)
           _QuotaRow(quota: quota),
         if (connected && app.exitEnabled)

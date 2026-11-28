@@ -137,7 +137,11 @@ class PeerStatus {
     this.rxBytes = 0,
     this.txBytes = 0,
     this.ip = '',
+    this.key = '',
+    this.cost = 0,
+    this.uptimeSeconds = 0,
     this.lastError = '',
+    this.lastErrorUnix = 0,
   });
 
   final String uri;
@@ -147,7 +151,11 @@ class PeerStatus {
   final int rxBytes;
   final int txBytes;
   final String ip;
+  final String key;
+  final int cost;
+  final double uptimeSeconds;
   final String lastError;
+  final int lastErrorUnix;
 
   factory PeerStatus.fromJson(Map<String, dynamic> json) => PeerStatus(
     uri: json['uri'] as String? ?? '',
@@ -157,7 +165,11 @@ class PeerStatus {
     rxBytes: (json['rxBytes'] as num?)?.toInt() ?? 0,
     txBytes: (json['txBytes'] as num?)?.toInt() ?? 0,
     ip: json['ip'] as String? ?? '',
+    key: json['key'] as String? ?? '',
+    cost: (json['cost'] as num?)?.toInt() ?? 0,
+    uptimeSeconds: (json['uptimeSeconds'] as num?)?.toDouble() ?? 0,
     lastError: json['lastError'] as String? ?? '',
+    lastErrorUnix: (json['lastErrorUnix'] as num?)?.toInt() ?? 0,
   );
 }
 
@@ -871,6 +883,11 @@ class ExitProfileStatus {
     this.ipv6State = '',
     this.dnsAddress = '',
     this.dnsPort = 0,
+    this.dnsState = '',
+    this.dnsSyncPercent = 0,
+    this.dnsSyncHave = 0,
+    this.dnsSyncHeight = 0,
+    this.dnsNodes = 0,
     this.quota,
   });
 
@@ -892,6 +909,19 @@ class ExitProfileStatus {
   final String ipv6State;
   final String dnsAddress;
   final int dnsPort;
+
+  /// What the exit resolver is doing: `off`, `starting`, `syncing` or `ready`.
+  /// Empty for an exit from before 1.7.29.
+  final String dnsState;
+  final int dnsSyncPercent;
+  final int dnsSyncHave;
+  final int dnsSyncHeight;
+  final int dnsNodes;
+
+  /// True while the resolver is not ready yet: a failed lookup then says
+  /// nothing about the server, the chain is still loading.
+  bool get dnsStarting => dnsState == 'starting' || dnsState == 'syncing';
+
   final ExitQuota? quota;
 
   factory ExitProfileStatus.fromJson(Map<String, dynamic> json) =>
@@ -911,6 +941,11 @@ class ExitProfileStatus {
         ipv6State: json['ipv6State'] as String? ?? '',
         dnsAddress: json['dnsAddress'] as String? ?? '',
         dnsPort: (json['dnsPort'] as num?)?.toInt() ?? 0,
+        dnsState: (json['dnsState'] as String? ?? '').trim(),
+        dnsSyncPercent: (json['dnsSyncPercent'] as num?)?.toInt() ?? 0,
+        dnsSyncHave: (json['dnsSyncHave'] as num?)?.toInt() ?? 0,
+        dnsSyncHeight: (json['dnsSyncHeight'] as num?)?.toInt() ?? 0,
+        dnsNodes: (json['dnsNodes'] as num?)?.toInt() ?? 0,
         quota: json['quota'] is Map<String, dynamic>
             ? ExitQuota.fromJson(json['quota'] as Map<String, dynamic>)
             : null,
